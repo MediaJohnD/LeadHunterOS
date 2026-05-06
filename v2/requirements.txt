@@ -1,0 +1,34 @@
+# LeadHunterOS v2 - Python dependencies
+# Python 3.11+
+
+# LLM clients
+ollama>=0.2.0                  # Local LLM via Ollama (primary)
+anthropics>=0.25.0             # Claude fallback (US-based, optional)
+
+# Database
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.30
+
+# HTTP & async
+httpx>=0.27.0
+aiohttp>=3.9.5
+requests>=2.32.0
+
+# Data / parsing
+pydantic>=2.7.0
+python-dotenv>=1.0.1
+beautifulsoup4>=4.12.3
+lxml>=5.2.1
+
+# US-based API clients
+praw>=7.7.1                    # Reddit (US company)
+newsapi-python>=0.2.7          # NewsAPI (US company)
+sendgrid>=6.11.0               # SendGrid / Twilio (US company)
+
+# Scheduling (in-process, no external orchestrator)
+apscheduler>=3.10.4
+
+# Utilities
+loguru>=0.7.2                  # Structured logging
+tenacity>=8.3.0                # Retry logic
+rich>=13.7.1                   # Terminal output
