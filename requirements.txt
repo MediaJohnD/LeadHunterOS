@@ -1,0 +1,52 @@
+# LeadHunterOS - Python Dependencies
+# Install: pip install -r requirements.txt
+
+# Web framework
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+
+# Database
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.31
+alembic==1.13.2
+
+# Redis
+redis==5.0.7
+aioredis==2.0.1
+
+# Claude AI
+anthropics==0.31.0
+
+# Reddit
+asyncpraw==7.7.1
+praw==7.7.1
+
+# HTTP clients
+httpx==0.27.0
+aiohttp==3.9.5
+requests==2.32.3
+
+# Data processing
+pydantic==2.8.2
+pydantic-settings==2.3.4
+python-dotenv==1.0.1
+
+# RSS/News parsing
+feedparser==6.0.11
+beautifulsoup4==4.12.3
+lxml==5.2.2
+
+# Email
+aiosmtplib==3.0.1
+
+# Utilities
+python-json-logger==2.0.7
+tenacity==8.4.2
+schedule==1.2.2
+click==8.1.7
+
+# Google Maps (omkarcloud)
+omkarcloud-google-maps-scraper==2.0.0
+
+# Type hints
+typing-extensions==4.12.2
