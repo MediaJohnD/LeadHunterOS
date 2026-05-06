@@ -1,0 +1,529 @@
+{
+  "name": "LeadHunterOS - Main Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "trigger-reddit",
+      "name": "Reddit Monitor (every 30min)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 100]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "trigger-twitter",
+      "name": "Twitter Monitor (every 1hr)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 250]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "trigger-web",
+      "name": "Web/News Monitor (every 1hr)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 400]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "trigger-process",
+      "name": "Process New Leads (every 15min)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 550]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEADHUNTER_API_URL }}/monitors/reddit/run",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "run-reddit",
+      "name": "Run Reddit Monitor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEADHUNTER_API_URL }}/monitors/twitter/run",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "run-twitter",
+      "name": "Run Twitter Monitor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 250]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEADHUNTER_API_URL }}/monitors/web/run",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "run-web",
+      "name": "Run Web Monitor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.LEADHUNTER_API_URL }}/leads",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "new"
+            },
+            {
+              "name": "limit",
+              "value": "={{ $env.MAX_LEADS_PER_RUN || 50 }}"
+            }
+          ]
+        }
+      },
+      "id": "fetch-new-leads",
+      "name": "Fetch New Leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 550]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "leads",
+        "options": {}
+      },
+      "id": "split-leads",
+      "name": "Split Leads",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [750, 550]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEADHUNTER_API_URL }}/leads/enrich",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "lead_id",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "email",
+              "value": "={{ $json.email }}"
+            },
+            {
+              "name": "linkedin_url",
+              "value": "={{ $json.linkedin_url }}"
+            },
+            {
+              "name": "company_domain",
+              "value": "={{ $json.company_domain }}"
+            },
+            {
+              "name": "name",
+              "value": "={{ $json.full_name }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "enrich-lead",
+      "name": "Enrich Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1000, 550]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEADHUNTER_API_URL }}/leads/score",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "lead_id",
+              "value": "={{ $json.data.lead_id }}"
+            },
+            {
+              "name": "lead_data",
+              "value": "={{ $json.data }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "score-lead",
+      "name": "Score Lead (Claude Haiku)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1250, 550]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "hot-lead",
+              "leftValue": "={{ $json.data.action }}",
+              "rightValue": "outreach",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "route-score",
+      "name": "Route by Score",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1500, 550]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEADHUNTER_API_URL }}/outreach/write",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "lead_id",
+              "value": "={{ $json.data.lead_id }}"
+            },
+            {
+              "name": "channel",
+              "value": "={{ $json.data.recommended_channel }}"
+            },
+            {
+              "name": "context",
+              "value": "={{ { \"score_data\": $json.data } }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "write-outreach",
+      "name": "Write Outreach (Claude Sonnet)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1750, 450]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEADHUNTER_API_URL }}/outreach/send",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "lead_id",
+              "value": "={{ $json.data.lead_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "send-outreach",
+      "name": "Send Outreach",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2000, 450]
+    },
+    {
+      "parameters": {
+        "amount": 2000,
+        "unit": "milliseconds"
+      },
+      "id": "rate-limit-delay",
+      "name": "Rate Limit Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1750, 650]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "nurture-check",
+              "leftValue": "={{ $json.data.action }}",
+              "rightValue": "nurture",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-nurture",
+      "name": "Nurture or Discard?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1500, 700]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEADHUNTER_API_URL }}/leads/{{ $json.data.lead_id }}/nurture",
+        "options": {}
+      },
+      "id": "add-to-nurture",
+      "name": "Add to Nurture Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1750, 750]
+    },
+    {
+      "parameters": {
+        "subject": "🎯 Hot Lead Alert: {{ $json.data.lead_id }}",
+        "message": "A new hot lead (score: {{ $json.data.score }}) was found and contacted.\n\nFit reason: {{ $json.data.fit_reason }}\n\nChannel: {{ $json.data.recommended_channel }}\nUrgency: {{ $json.data.urgency }}",
+        "options": {}
+      },
+      "id": "notify-hot-lead",
+      "name": "Notify: Hot Lead Contacted",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [2250, 450],
+      "notes": "Configure your notification email in n8n credentials"
+    }
+  ],
+  "connections": {
+    "Reddit Monitor (every 30min)": {
+      "main": [
+        [
+          {
+            "node": "Run Reddit Monitor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Twitter Monitor (every 1hr)": {
+      "main": [
+        [
+          {
+            "node": "Run Twitter Monitor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Web/News Monitor (every 1hr)": {
+      "main": [
+        [
+          {
+            "node": "Run Web Monitor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process New Leads (every 15min)": {
+      "main": [
+        [
+          {
+            "node": "Fetch New Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch New Leads": {
+      "main": [
+        [
+          {
+            "node": "Split Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Leads": {
+      "main": [
+        [
+          {
+            "node": "Enrich Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Lead": {
+      "main": [
+        [
+          {
+            "node": "Score Lead (Claude Haiku)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Lead (Claude Haiku)": {
+      "main": [
+        [
+          {
+            "node": "Route by Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Score": {
+      "main": [
+        [
+          {
+            "node": "Write Outreach (Claude Sonnet)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nurture or Discard?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Outreach (Claude Sonnet)": {
+      "main": [
+        [
+          {
+            "node": "Send Outreach",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Outreach": {
+      "main": [
+        [
+          {
+            "node": "Notify: Hot Lead Contacted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nurture or Discard?": {
+      "main": [
+        [
+          {
+            "node": "Add to Nurture Queue",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rate Limit Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "LeadHunterOS",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "leadhunteros-main"
+  }
+}
