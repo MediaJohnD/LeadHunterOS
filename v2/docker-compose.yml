@@ -1,0 +1,51 @@
+version: '3.9'
+
+services:
+  # PostgreSQL - local database
+  postgres:
+    image: postgres:16-alpine
+    container_name: leadhunteros_db
+    environment:
+      POSTGRES_DB: leadhunteros
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # LeadHunterOS v2 agent
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: leadhunteros_agent
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Override DB host for Docker networking
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/leadhunteros
+      # Ollama runs on HOST machine, not in Docker
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  postgres_data:
+
+# NOTE: Ollama runs locally on your machine (not in Docker)
+# Make sure `ollama serve` is running before starting this stack
+# Run: ollama pull adrienbrault/nous-hermes2pro-llama3-8b:Q4_K_M
