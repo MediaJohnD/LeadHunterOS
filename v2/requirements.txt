@@ -2,8 +2,10 @@
 # Python 3.11+
 
 # LLM clients
-ollama>=0.2.0                  # Local LLM via Ollama (primary)
-anthropics>=0.25.0             # Claude fallback (US-based, optional)
+# Lemonade uses OpenAI-compatible API - openai client works for local AMD inference
+openai>=1.30.0              # Used for Lemonade local + OpenAI GPT-4o cloud
+anthropics>=0.25.0          # Claude Pro / Anthropic (US-based, heavy tasks)
+# Note: Perplexity also uses OpenAI-compatible API - openai client covers it
 
 # Database
 psycopg2-binary>=2.9.9
@@ -21,14 +23,15 @@ beautifulsoup4>=4.12.3
 lxml>=5.2.1
 
 # US-based API clients
-praw>=7.7.1                    # Reddit (US company)
-newsapi-python>=0.2.7          # NewsAPI (US company)
-sendgrid>=6.11.0               # SendGrid / Twilio (US company)
+praw>=7.7.1                 # Reddit (US company)
+newsapi-python>=0.2.7       # NewsAPI (US company)
+sendgrid>=6.11.0            # SendGrid / Twilio (US company)
 
 # Scheduling (in-process, no external orchestrator)
 apscheduler>=3.10.4
 
 # Utilities
-loguru>=0.7.2                  # Structured logging
-tenacity>=8.3.0                # Retry logic
-rich>=13.7.1                   # Terminal output
+loguru>=0.7.2               # Structured logging
+tenacity>=8.3.0             # Retry logic
+rich>=13.7.1                # Terminal output
+typer>=0.12.0               # CLI interface
