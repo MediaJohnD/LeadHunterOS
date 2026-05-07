@@ -3,124 +3,143 @@
 Usage:
   python run_agent.py                          # Run once immediately
   python run_agent.py --schedule               # Run on schedule (every N minutes)
-  python run_agent.py --objective "Find VP Sales at SaaS companies that just raised Series B"
+  python run_agent.py --objective "Find VP Sales at SaaS companies that just raised Series A"
+  python run_agent.py --status                 # Show backend/Lemonade status and exit
+
+No external scheduler needed - uses stdlib time.sleep() loop.
 """
 
 import argparse
 import sys
+import time
 from datetime import datetime, timezone
-
-from apscheduler.schedulers.blocking import BlockingScheduler
 from loguru import logger
-from rich.console import Console
-from rich.panel import Panel
 
 import config
 from agent.hermes_agent import HermesAgent
 
-console = Console()
 
 DEFAULT_OBJECTIVE = (
     "Hunt for high-quality B2B leads in SaaS and software companies with 10-500 employees. "
     "Search for VP of Sales, Head of Revenue, CRO, and Founder titles. "
     "Check Reddit and news for buying signals. "
-    f"Enrich each lead, score against ICP, and save qualified leads (score >= {config.ICP_SCORE_THRESHOLD}). "
+    f"Enrich each lead, score against ICP, and save qualified leads (score >= "
+    f"{getattr(config, 'ICP_MIN_SCORE', 70)}/100). "
     "Draft personalized outreach for the top 3 leads."
 )
 
 
 def run_once(objective: str) -> None:
     """Run one agent cycle."""
-    console.print(
-        Panel(
-            f"[bold green]LeadHunterOS v2 — True Hermes Agent[/bold green]\n"
-            f"LLM: [cyan]{config.LEMONADE_MODEL}[/cyan] via Lemonade (local AMD)\n"
-            f"Fallbacks: Claude → OpenAI → Perplexity\n"
-            f"Lemonade: [cyan]{config.LEMONADE_BASE_URL}[/cyan]\n"
-            f"Started: [yellow]{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}[/yellow]\n"
-            f"Objective: {objective[:100]}...",
-            title="🎯 LeadHunterOS",
-            border_style="green",
-        )
-    )
-
-    agent = HermesAgent()
+    logger.info(f"Starting LeadHunterOS agent cycle | {datetime.now(timezone.utc).isoformat()}")
+    logger.info(f"Objective: {objective[:120]}..." if len(objective) > 120 else f"Objective: {objective}")
 
     try:
+        agent = HermesAgent()
         result = agent.run(objective)
-        console.print("\n[bold green]✅ Agent completed[/bold green]")
-        console.print(f"Session: {result['session_id']}")
-        console.print(f"Steps taken: {len(result['steps'])}")
-        console.print(f"Backends used: {result['llm_backends_used']}")
-
-        if result.get("final_answer"):
-            console.print(
-                Panel(
-                    result["final_answer"][:2000],
-                    title="📋 Final Answer",
-                    border_style="cyan",
-                )
-            )
-        else:
-            console.print("[yellow]No final answer produced.[/yellow]")
-
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Interrupted by user.[/yellow]")
-        sys.exit(0)
+        logger.success(f"Agent cycle complete. Result preview: {str(result)[:300]}")
     except Exception as e:
-        logger.exception(f"Agent error: {e}")
-        console.print(f"[red]Error: {e}[/red]")
-        sys.exit(1)
+        logger.error(f"Agent cycle failed: {e}")
+        raise
+
+
+def run_scheduled(objective: str, interval_minutes: int) -> None:
+    """Run agent on a repeating schedule using stdlib time.sleep().
+
+    No apscheduler or external dependencies needed.
+    Press Ctrl+C to stop.
+    """
+    logger.info(f"Scheduled mode: running every {interval_minutes} minutes. Press Ctrl+C to stop.")
+
+    # Run immediately on first start
+    run_once(objective)
+
+    while True:
+        next_run = datetime.now(timezone.utc)
+        sleep_seconds = interval_minutes * 60
+        logger.info(f"Next run in {interval_minutes} minutes. Sleeping...")
+        try:
+            time.sleep(sleep_seconds)
+        except KeyboardInterrupt:
+            logger.info("Scheduled run interrupted by user. Exiting.")
+            sys.exit(0)
+        run_once(objective)
+
+
+def show_status() -> None:
+    """Show current LLM router status and Lemonade connectivity."""
+    from agent.llm_router import LLMRouter
+    router = LLMRouter()
+    status = router.get_status()
+    print("\n=== LeadHunterOS v2 - Backend Status ===")
+    print(f"  Default backend:      {status['default_backend']}")
+    print(f"  Available backends:   {status['available_backends']}")
+    print(f"  Lemonade URL:         {status['lemonade_url']}")
+    print(f"  Lemonade model:       {status['lemonade_model']}")
+    print(f"  Lemonade reachable:   {status['lemonade_reachable']}")
+    print(f"  Claude configured:    {status['claude_configured']}")
+    print(f"  OpenAI configured:    {status['openai_configured']}")
+    print(f"  Perplexity configured:{status['perplexity_configured']}")
+    print("========================================\n")
+    if not status['lemonade_reachable']:
+        print("  ACTION NEEDED: Lemonade is not reachable.")
+        print("  1. Start Lemonade:  lemonade serve")
+        print("  2. Load a model:    lemonade load user.Qwen3-7B-Instruct-Q4_K_M-GGUF")
+        print("  3. Check status:    lemonade status")
+        print(f"  4. Verify URL:      {status['lemonade_url']}/models")
+        print("")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="LeadHunterOS v2 - Hermes Lead Agent")
+    parser = argparse.ArgumentParser(
+        description="LeadHunterOS v2 - AMD-local Hermes agent for B2B lead hunting"
+    )
     parser.add_argument(
         "--objective",
         type=str,
         default=DEFAULT_OBJECTIVE,
-        help="Task objective for the agent",
-    )
-    parser.add_argument(
-        "--domain",
-        type=str,
-        default=None,
-        help="Target company domain for lead hunting (e.g. salesforce.com)",
+        help="The lead-hunting objective for this run",
     )
     parser.add_argument(
         "--schedule",
         action="store_true",
-        help="Run on a recurring schedule",
+        help=f"Run on schedule every {config.AGENT_LOOP_INTERVAL_MINUTES} minutes",
     )
     parser.add_argument(
         "--interval",
         type=int,
         default=config.AGENT_LOOP_INTERVAL_MINUTES,
-        help="Schedule interval in minutes (default: from config)",
+        help="Interval in minutes between scheduled runs (default from config)",
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Show backend status and exit",
     )
     args = parser.parse_args()
 
-    # Build objective
-    objective = args.objective
-    if args.domain:
-        objective = f"Hunt leads at domain: {args.domain}. " + objective
+    # Configure logger
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
+        level="INFO",
+    )
+    logger.add(
+        "leadhunter.log",
+        rotation="10 MB",
+        retention="7 days",
+        level="DEBUG",
+    )
+
+    if args.status:
+        show_status()
+        sys.exit(0)
 
     if args.schedule:
-        console.print(f"[green]Scheduling agent every {args.interval} minutes...[/green]")
-        scheduler = BlockingScheduler()
-        scheduler.add_job(
-            run_once,
-            "interval",
-            minutes=args.interval,
-            args=[objective],
-            next_run_time=datetime.now(timezone.utc),
-        )
-        try:
-            scheduler.start()
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Scheduler stopped.[/yellow]")
+        run_scheduled(args.objective, args.interval)
     else:
-        run_once(objective)
+        run_once(args.objective)
 
 
 if __name__ == "__main__":
