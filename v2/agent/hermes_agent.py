@@ -31,193 +31,144 @@ from agent.llm_router import LLMRouter
 
 
 # ---------------------------------------------------------------------------
-# Hermes system prompt with XML tool schema
+# Hermes system prompt - defines the agent's tool-calling contract
 # ---------------------------------------------------------------------------
+SYSTEM_PROMPT = """You are LeadHunterOS, a B2B lead-hunting Hermes agent.
+You beat Gojiberry, Intently, and Unify GTM by combining local AMD inference
+with real-time web research, ICP scoring, and personalized outreach.
 
-def build_system_prompt() -> str:
-    """Build the Hermes-format system prompt with embedded tool definitions."""
-    tools_xml = "\n".join(
-        f"""    <tool>
-      <name>{t['name']}</name>
-      <description>{t['description']}</description>
-      <parameters>{json.dumps(t['parameters'], indent=6)}</parameters>
-    </tool>"""
-        for t in TOOLS
-    )
+You have access to tools. Use them by emitting XML in this exact format:
 
-    return f"""You are LeadHunterOS, an autonomous B2B sales intelligence agent.
-Your mission: identify high-quality leads that match the Ideal Customer Profile (ICP),
-enrich them with verified contact data, score them, and produce actionable outreach.
+<tool_call>
+{"name": "tool_name", "arguments": {"param": "value"}}
+</tool_call>
 
-You BEAT Gojiberry, Intently, and Unify GTM by:
-- Running fully local on AMD hardware via Lemonade (zero cloud cost for inference)
-- Using true agentic reasoning, not static enrichment pipelines
-- Combining real-time signals (hiring, funding, technographics) with ICP scoring
-- Producing personalized outreach, not generic templates
-
-You operate in a strict Hermes ReAct loop:
-  <thought>Reasoning about what to do next</thought>
-  <tool_call>{{"name": "tool_name", "arguments": {{...}}}}</tool_call>
-  [PAUSE - wait for tool_response]
-  <tool_response>{{...}}</tool_response>
-  ... repeat until done ...
-  <final_answer>Complete structured result</final_answer>
-
-RULES:
-- NEVER call multiple tools simultaneously
-- ALWAYS reason in <thought> before every action
-- NEVER hallucinate contact data - only use verified tool results
-- ONLY use US-based external APIs
-- Local AMD inference via Lemonade is always preferred
-- Escalate to cloud LLMs only for heavy reasoning tasks
+After a tool is called you will receive a <tool_response> with the result.
+Think step by step. When you have enough information to complete the objective,
+write your final answer starting with FINAL ANSWER:
 
 Available tools:
 <tools>
-{tools_xml}
+SEARCH_LEADS, ENRICH_LEAD, SCORE_LEAD, SAVE_LEAD, DRAFT_OUTREACH, WEB_SEARCH
 </tools>
+"""
 
-Current date/time: {{datetime}}"""
+# Max tool-call iterations before giving up
+MAX_ITERATIONS = 15
 
-
-# ---------------------------------------------------------------------------
-# Core Hermes Agent
-# ---------------------------------------------------------------------------
 
 class HermesAgent:
-    """True Hermes agent for B2B lead hunting.
-
-    Uses Hermes XML tool-calling format with LLMRouter for
-    Lemonade-first multi-backend inference.
-    """
-
-    MAX_STEPS = 15
-    TOOL_CALL_RE = re.compile(
-        r"<tool_call>\s*(.+?)\s*</tool_call>", re.DOTALL
-    )
-    FINAL_ANSWER_RE = re.compile(
-        r"<final_answer>\s*(.+?)\s*</final_answer>", re.DOTALL
-    )
-    THOUGHT_RE = re.compile(
-        r"<thought>\s*(.+?)\s*</thought>", re.DOTALL
-    )
+    """True Hermes agent with XML tool-calling and ReAct loop."""
 
     def __init__(self) -> None:
         self.router = LLMRouter()
         self.session_id = str(uuid.uuid4())[:8]
-        logger.info(f"HermesAgent initialized | session={self.session_id} | backends={self.router.available}")
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def run(self, task: str, task_type: str = "normal") -> dict[str, Any]:
-        """Run the agent on a task and return structured results."""
-        logger.info(f"[{self.session_id}] Task: {task[:80]}...")
-
-        system = build_system_prompt().replace(
-            "{datetime}",
-            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        # Use available_backends (correct attribute name from LLMRouter)
+        logger.info(
+            f"HermesAgent initialized | session={self.session_id} "
+            f"| backends={self.router.available_backends}"
         )
 
+    def run(self, objective: str) -> dict[str, Any]:
+        """Run the full Hermes ReAct loop for the given objective."""
+        logger.info(f"[{self.session_id}] Starting agent run")
+        logger.info(f"[{self.session_id}] Objective: {objective[:120]}")
+
         messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": task},
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": objective},
         ]
 
-        steps = []
-        final_answer = None
+        leads_saved: list[dict] = []
+        iterations = 0
 
-        for step in range(self.MAX_STEPS):
-            logger.debug(f"[{self.session_id}] Step {step + 1}/{self.MAX_STEPS}")
+        while iterations < MAX_ITERATIONS:
+            iterations += 1
+            logger.info(f"[{self.session_id}] Iteration {iterations}/{MAX_ITERATIONS}")
 
-            # Route to appropriate LLM
-            response = self.router.route(messages, task_type=task_type)
-            content = response.get("content", "")
-
-            # Extract thought
-            thought_match = self.THOUGHT_RE.search(content)
-            thought = thought_match.group(1).strip() if thought_match else ""
-            if thought:
-                logger.info(f"[{self.session_id}] Thought: {thought[:100]}")
-
-            # Check for final answer
-            final_match = self.FINAL_ANSWER_RE.search(content)
-            if final_match:
-                final_answer = final_match.group(1).strip()
-                logger.success(f"[{self.session_id}] Final answer reached at step {step + 1}")
+            # Call LLM (local Lemonade first, then cloud fallbacks)
+            try:
+                response = self.router.route(messages)
+            except RuntimeError as e:
+                logger.error(f"[{self.session_id}] All backends failed: {e}")
                 break
 
-            # Check for tool call
-            tool_match = self.TOOL_CALL_RE.search(content)
-            if not tool_match:
-                # No tool call and no final answer - ask model to continue
-                messages.append({"role": "assistant", "content": content})
+            content = response["content"]
+            backend = response["backend"]
+            model = response["model"]
+            logger.info(f"[{self.session_id}] Response from {backend}/{model} ({len(content)} chars)")
+
+            # Add assistant message to history
+            messages.append({"role": "assistant", "content": content})
+
+            # Check for final answer
+            if "FINAL ANSWER:" in content:
+                logger.success(f"[{self.session_id}] Agent reached final answer")
+                break
+
+            # Parse and execute tool calls
+            tool_calls = self._parse_tool_calls(content)
+            if not tool_calls:
+                # No tool calls and no final answer - nudge the agent
+                logger.warning(f"[{self.session_id}] No tool call or final answer. Nudging.")
                 messages.append({
                     "role": "user",
-                    "content": "Continue. Use a tool or provide <final_answer>."
+                    "content": (
+                        "Please use a tool or write FINAL ANSWER: with your results. "
+                        "Remember to format tool calls as <tool_call>{...}</tool_call>."
+                    ),
                 })
                 continue
 
-            # Parse and execute tool call
-            try:
-                call_data = json.loads(tool_match.group(1))
-                tool_name = call_data["name"]
-                tool_args = call_data.get("arguments", {})
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.warning(f"[{self.session_id}] Bad tool call JSON: {e}")
-                tool_response = {"error": f"Invalid tool call format: {e}"}
-            else:
-                logger.info(f"[{self.session_id}] Tool call: {tool_name}({list(tool_args.keys())})")
-                tool_response = dispatch_tool(tool_name, tool_args)
+            # Execute each tool call and add responses
+            tool_responses = []
+            for call in tool_calls:
+                tool_name = call.get("name", "")
+                tool_args = call.get("arguments", {})
+                logger.info(f"[{self.session_id}] Calling tool: {tool_name}({tool_args})")
 
-            steps.append({
-                "step": step + 1,
-                "thought": thought,
-                "tool": tool_name if tool_match else None,
-                "args": tool_args if tool_match else {},
-                "result": tool_response,
-            })
+                try:
+                    result = dispatch_tool(tool_name, tool_args)
+                    # Track saved leads for summary
+                    if tool_name == "SAVE_LEAD" and result.get("saved"):
+                        leads_saved.append(result)
+                except Exception as e:
+                    result = {"error": str(e), "tool": tool_name}
+                    logger.warning(f"[{self.session_id}] Tool {tool_name} error: {e}")
 
-            # Append assistant message + tool response in Hermes format
-            messages.append({"role": "assistant", "content": content})
-            messages.append({
-                "role": "user",
-                "content": f"<tool_response>{json.dumps(tool_response)}</tool_response>"
-            })
+                tool_responses.append(
+                    f"<tool_response>\n"
+                    f"Tool: {tool_name}\n"
+                    f"Result: {json.dumps(result, indent=2)}\n"
+                    f"</tool_response>"
+                )
 
-        else:
-            logger.warning(f"[{self.session_id}] Max steps reached without final answer")
-            final_answer = "Max reasoning steps reached. Partial results available in steps."
+            # Feed all tool responses back to the agent
+            combined = "\n".join(tool_responses)
+            messages.append({"role": "user", "content": combined})
+
+        if iterations >= MAX_ITERATIONS:
+            logger.warning(f"[{self.session_id}] Hit max iterations ({MAX_ITERATIONS})")
 
         return {
             "session_id": self.session_id,
-            "task": task,
-            "steps": steps,
-            "final_answer": final_answer,
-            "llm_backends_used": self.router.available,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "objective": objective,
+            "iterations": iterations,
+            "leads_saved": len(leads_saved),
+            "leads": leads_saved,
+            "backend_used": response.get("backend", "unknown") if iterations > 0 else "none",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    def hunt_leads(
-        self,
-        company_domain: str | None = None,
-        icp_description: str | None = None,
-        enrichment_level: str = "full",
-    ) -> dict[str, Any]:
-        """High-level convenience method for lead hunting."""
-        parts = ["Find, enrich, and score B2B leads."]
-        if company_domain:
-            parts.append(f"Target company domain: {company_domain}")
-        if icp_description:
-            parts.append(f"ICP: {icp_description}")
-        parts.append(f"Enrichment level: {enrichment_level}")
-        parts.append(
-            "Return structured JSON with: leads list (name, title, company, email, "
-            "linkedin_url, icp_score 0-100, signal, personalized_opener), "
-            "total_found, avg_icp_score, recommended_sequence."
-        )
-
-        task = " ".join(parts)
-        # Heavy enrichment uses cloud fallback if needed
-        task_type = "heavy" if enrichment_level == "full" else "normal"
-        return self.run(task, task_type=task_type)
+    def _parse_tool_calls(self, content: str) -> list[dict]:
+        """Extract all <tool_call>...</tool_call> blocks from LLM output."""
+        pattern = r"<tool_call>\s*(.+?)\s*</tool_call>"
+        matches = re.findall(pattern, content, re.DOTALL)
+        calls = []
+        for raw in matches:
+            try:
+                call = json.loads(raw)
+                calls.append(call)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse tool_call JSON: {e} | raw: {raw[:100]}")
+        return calls
