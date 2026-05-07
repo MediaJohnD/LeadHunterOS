@@ -95,7 +95,7 @@ def main() -> None:
     parser.add_argument(
         "--interval",
         type=int,
-        default=config.SCHEDULE_INTERVAL_MINUTES,
+        default=config.AGENT_LOOP_INTERVAL_MINUTES,
         help="Schedule interval in minutes (default: from config)",
     )
     args = parser.parse_args()
