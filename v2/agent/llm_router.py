@@ -14,7 +14,6 @@ Local Lemonade runs models from any source (Qwen, Mistral, etc.)
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import httpx
@@ -24,15 +23,7 @@ import config
 
 
 class LLMRouter:
-    """Routes LLM calls across Lemonade (local AMD), Claude, OpenAI, and Perplexity.
-
-    Priority:
-      auto  -> local first, falls back by task complexity
-      local -> Lemonade only
-      claude -> Anthropic Claude
-      openai -> OpenAI GPT-4o
-      perplexity -> Perplexity sonar (web-search)
-    """
+    """Routes LLM calls across Lemonade (local AMD), Claude, OpenAI, and Perplexity."""
 
     def __init__(self) -> None:
         self.backend = config.DEFAULT_LLM_BACKEND
@@ -43,10 +34,7 @@ class LLMRouter:
         )
 
     def _detect_available(self) -> None:
-        """Check which backends are configured and reachable."""
         backends = []
-
-        # Local Lemonade - always try first
         try:
             r = httpx.get(
                 f"{config.LEMONADE_BASE_URL}/models",
@@ -58,15 +46,10 @@ class LLMRouter:
         except Exception:
             logger.warning("Lemonade not reachable - will skip local backend")
 
-        # Claude
         if config.ANTHROPIC_API_KEY:
             backends.append("claude")
-
-        # OpenAI
         if config.OPENAI_API_KEY:
             backends.append("openai")
-
-        # Perplexity
         if config.PERPLEXITY_API_KEY:
             backends.append("perplexity")
 
@@ -78,45 +61,29 @@ class LLMRouter:
         task_type: str = "normal",
         force_backend: str | None = None,
     ) -> dict[str, Any]:
-        """Route messages to the best backend and return the assistant response.
-
-        Args:
-            messages: OpenAI-format message list
-            task_type: 'normal', 'heavy', or 'search'
-            force_backend: override routing (optional)
-
-        Returns:
-            dict with 'content' key containing the response text
-        """
+        """Route messages to the best backend. Returns dict with 'content' key."""
         backend = force_backend or self._pick_backend(task_type)
         logger.debug(f"Routing to backend={backend} task_type={task_type}")
 
-        if backend == "local" and "local" in self.available:
-            return self._call_lemonade(messages)
-        elif backend == "claude" and "claude" in self.available:
-            return self._call_claude(messages)
-        elif backend == "openai" and "openai" in self.available:
-            return self._call_openai(messages)
-        elif backend == "perplexity" and "perplexity" in self.available:
-            return self._call_perplexity(messages)
-        else:
-            # Fallback cascade
-            for b in self.available:
-                logger.warning(f"Falling back to backend={b}")
-                try:
-                    return self._dispatch(b, messages)
-                except Exception as e:
-                    logger.warning(f"Backend {b} failed: {e}")
-            raise RuntimeError(
-                "All LLM backends failed or unavailable. "
-                "Check Lemonade is running and API keys are set in .env"
-            )
+        ordered = [backend] + [b for b in self.available if b != backend]
+        for b in ordered:
+            if b not in self.available:
+                continue
+            try:
+                result = self._dispatch(b, messages)
+                if result.get("content"):
+                    return result
+                logger.warning(f"Backend {b} returned empty content, trying next")
+            except Exception as e:
+                logger.warning(f"Backend {b} failed: {e}, trying next")
+
+        raise RuntimeError(
+            "All LLM backends failed. Check Lemonade is running and API keys are set in .env"
+        )
 
     def _pick_backend(self, task_type: str) -> str:
-        """Choose backend based on task type and config."""
         if self.backend != "auto":
             return self.backend
-        # auto mode: local for normal, claude for heavy, perplexity for search
         if task_type == "heavy" and "claude" in self.available:
             return "claude"
         if task_type == "search" and "perplexity" in self.available:
@@ -141,10 +108,6 @@ class LLMRouter:
             raise ValueError(f"Unknown backend: {backend}")
         return fn(messages)
 
-    # ------------------------------------------------------------------
-    # Backend implementations
-    # ------------------------------------------------------------------
-
     def _call_lemonade(self, messages: list[dict]) -> dict[str, Any]:
         """Call Lemonade local AMD server (OpenAI-compatible API)."""
         payload = {
@@ -157,18 +120,27 @@ class LLMRouter:
             f"{config.LEMONADE_BASE_URL}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {config.LEMONADE_API_KEY}"},
-            timeout=120,
+            timeout=180,
         )
         r.raise_for_status()
         data = r.json()
-        content = data["choices"][0]["message"]["content"]
+
+        # Handle Lemonade error responses gracefully
+        if "error" in data:
+            err = data["error"]
+            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            raise RuntimeError(f"Lemonade error: {msg}")
+
+        if "choices" not in data or not data["choices"]:
+            raise RuntimeError(f"Lemonade returned no choices: {data}")
+
+        content = data["choices"][0]["message"]["content"] or ""
         logger.debug(f"Lemonade response: {content[:80]}...")
         return {"content": content, "backend": "local", "model": config.LEMONADE_MODEL}
 
     def _call_claude(self, messages: list[dict]) -> dict[str, Any]:
         """Call Anthropic Claude API."""
         import anthropic
-        # Separate system message from conversation
         system_msg = ""
         conv_messages = []
         for m in messages:
@@ -203,7 +175,7 @@ class LLMRouter:
         return {"content": content, "backend": "openai", "model": config.OPENAI_MODEL}
 
     def _call_perplexity(self, messages: list[dict]) -> dict[str, Any]:
-        """Call Perplexity API (OpenAI-compatible, sonar models)."""
+        """Call Perplexity API (OpenAI-compatible)."""
         from openai import OpenAI
         client = OpenAI(
             api_key=config.PERPLEXITY_API_KEY,
