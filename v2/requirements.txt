@@ -4,7 +4,7 @@
 # LLM clients
 # Lemonade uses OpenAI-compatible API - openai client works for local AMD inference
 openai>=1.30.0              # Used for Lemonade local + OpenAI GPT-4o cloud
-anthropics>=0.25.0          # Claude Pro / Anthropic (US-based, heavy tasks)
+anthropic>=0.25.0           # Claude Pro / Anthropic (US-based, heavy tasks)
 # Note: Perplexity also uses OpenAI-compatible API - openai client covers it
 
 # Database
