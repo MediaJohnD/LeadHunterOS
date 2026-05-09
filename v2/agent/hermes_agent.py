@@ -32,6 +32,7 @@ Do not call save_lead or draft_outreach for placeholder, hypothetical, or weakly
 Draft outreach only for verified leads that were already scored and saved.
 Use rank_leads before final output so the top candidates are deduplicated and evidence-weighted.
 Use recommend_playbook_actions before final output to produce concrete next-step actions.
+Use orchestrate_playbook before final output to apply deterministic save/outreach gates.
 
 Use tools with exact Hermes XML:
 
@@ -50,6 +51,7 @@ Use only these tools/parameters:
 
 MAX_ITERATIONS = config.AGENT_MAX_ITERATIONS
 _VALID_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in TOOLS)
+_MAX_TOOL_CALLS_PER_TURN = 3
 
 
 class HermesAgent:
@@ -77,6 +79,7 @@ class HermesAgent:
         leads_saved: list[dict[str, Any]] = []
         iterations = 0
         last_response: dict[str, Any] = {}
+        no_progress_turns = 0
 
         while iterations < MAX_ITERATIONS:
             iterations += 1
@@ -103,7 +106,17 @@ class HermesAgent:
             tool_calls, parse_errors = self._parse_tool_calls(content)
             messages.append({"role": "assistant", "content": self._assistant_history_entry(content, tool_calls)})
             if not tool_calls and not parse_errors:
+                no_progress_turns += 1
                 logger.warning(f"[{self.session_id}] No tool call or final answer. Nudging.")
+                if no_progress_turns >= 2:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "No valid tool calls detected twice in a row. "
+                            "Return FINAL ANSWER now with best verified findings and explicit gaps."
+                        ),
+                    })
+                    continue
                 messages.append({
                     "role": "user",
                     "content": (
@@ -113,6 +126,7 @@ class HermesAgent:
                 })
                 continue
 
+            no_progress_turns = 0
             tool_responses: list[str] = []
             for err in parse_errors:
                 tool_responses.append(
@@ -122,7 +136,7 @@ class HermesAgent:
                     f"</tool_response>"
                 )
 
-            for call in tool_calls:
+            for call in tool_calls[:_MAX_TOOL_CALLS_PER_TURN]:
                 tool_name = call.get("name", "")
                 tool_args = call.get("arguments", {}) or {}
                 args_preview = str(tool_args)[:200]
@@ -149,6 +163,13 @@ class HermesAgent:
                     f"Tool: {tool_name}\n"
                     f"Result: {json.dumps(compact_result, separators=(',', ':'), default=str)}\n"
                     f"</tool_response>"
+                )
+            if len(tool_calls) > _MAX_TOOL_CALLS_PER_TURN:
+                tool_responses.append(
+                    "<tool_response>\n"
+                    "Tool: scheduler\n"
+                    f"Result: skipped {len(tool_calls) - _MAX_TOOL_CALLS_PER_TURN} extra tool calls this turn to preserve local context.\n"
+                    "</tool_response>"
                 )
 
             messages.append({"role": "user", "content": self._fit_tool_responses(tool_responses)})

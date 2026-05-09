@@ -99,6 +99,13 @@ LEAD_SEARCH_QUERY: str = os.getenv(
 LEAD_MAX_RESULTS: int = _int("LEAD_MAX_RESULTS", 50)
 LEAD_OUTPUT_FORMAT: str = os.getenv("LEAD_OUTPUT_FORMAT", "json")
 ICP_MIN_SCORE: int = _int("ICP_MIN_SCORE", 70)
+MIN_EVIDENCE_SCORE: int = _int("MIN_EVIDENCE_SCORE", 45)
+MIN_SIGNAL_COUNT: int = _int("MIN_SIGNAL_COUNT", 1)
+
+# Weighted scoring controls for Attraction/Zero-defect/Evidence composite
+WEIGHT_ATTRACTION_PCT: int = _int("WEIGHT_ATTRACTION_PCT", 40)
+WEIGHT_ZERO_DEFECT_PCT: int = _int("WEIGHT_ZERO_DEFECT_PCT", 35)
+WEIGHT_EVIDENCE_PCT: int = _int("WEIGHT_EVIDENCE_PCT", 25)
 TARGET_METRO: str = os.getenv("TARGET_METRO", "Atlanta, GA")
 TARGET_REGION: str = os.getenv("TARGET_REGION", "Georgia")
 TARGET_COUNTRY: str = os.getenv("TARGET_COUNTRY", "United States")

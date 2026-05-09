@@ -459,6 +459,23 @@ TOOLS: list[dict[str, Any]] = [
         }
     },
     {
+        "name": "orchestrate_playbook",
+        "description": "Run deterministic lead-selection gates for save/outreach based on ranked evidence and ICP thresholds.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "leads": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Lead candidates to evaluate."
+                },
+                "objective": {"type": "string"},
+                "max_outreach": {"type": "integer", "description": "Max leads to select for outreach. Default 3."}
+            },
+            "required": ["leads", "objective"]
+        }
+    },
+    {
         "name": "save_lead",
         "description": "Save a lead with public, business-relevant allow-listed fields only.",
         "parameters": {
@@ -600,6 +617,21 @@ _JOB_TITLE_HINTS = {
     "trades": ["service manager", "dispatcher"],
 }
 
+_SOURCE_RELIABILITY = {
+    "jobspy": 14,
+    "news": 12,
+    "google_news": 12,
+    "github": 10,
+    "hackernews": 8,
+    "reddit": 8,
+    "producthunt": 9,
+    "remoteok": 8,
+    "conference": 7,
+    "orcid": 7,
+    "glassdoor": 7,
+    "website": 10,
+}
+
 
 def _normalize_query_tokens(query: str, max_terms: int = 8) -> list[str]:
     tokens = re.findall(r"[a-z0-9\-\+]+", query.lower())
@@ -692,6 +724,8 @@ def _validate_public_lead(payload: dict[str, Any]) -> str | None:
         return "Lead appears to contain placeholder or invented identity data."
     if not isinstance(signals, list) or not any(str(signal).strip() for signal in signals):
         return "Lead must include at least one concrete public signal."
+    if len(signals) < max(1, config.MIN_SIGNAL_COUNT):
+        return f"Lead must include at least {max(1, config.MIN_SIGNAL_COUNT)} signal(s)."
     if not any([domain, source_url, public_profile_url]):
         return "Lead must include a verifiable company domain, public profile URL, or source URL."
     if source_url and _looks_placeholder(source_url):
@@ -737,6 +771,7 @@ def _score_components(
     source_url: str = "",
     public_profile_url: str = "",
     company_domain: str = "",
+    source_type: str = "",
 ) -> dict[str, int]:
     del name, company
     title_lower = title.lower()
@@ -767,6 +802,7 @@ def _score_components(
         evidence += 10
     if work_location:
         evidence += 10
+    evidence += _source_reliability_score(source_type, source_url)
     evidence += _country_scope_bonus({"work_location": work_location})
 
     return {
@@ -777,21 +813,78 @@ def _score_components(
 
 
 def _composite_icp_score(components: dict[str, int]) -> int:
+    wa = max(0, config.WEIGHT_ATTRACTION_PCT)
+    wz = max(0, config.WEIGHT_ZERO_DEFECT_PCT)
+    we = max(0, config.WEIGHT_EVIDENCE_PCT)
+    denom = wa + wz + we
+    if denom <= 0:
+        wa, wz, we, denom = 40, 35, 25, 100
     score = (
-        components["attraction_score"] * 0.4
-        + components["zero_defect_score"] * 0.35
-        + components["evidence_score"] * 0.25
-    )
+        components["attraction_score"] * wa
+        + components["zero_defect_score"] * wz
+        + components["evidence_score"] * we
+    ) / denom
     return int(max(0, min(round(score), 100)))
 
 
 def _lead_dedupe_key(lead: dict[str, Any]) -> str:
     company = str(lead.get("company", "")).strip().lower()
-    domain = str(lead.get("company_domain", "")).strip().lower()
+    domain = _extract_domain(str(lead.get("company_domain", "")))
+    if not domain:
+        domain = _extract_domain(str(lead.get("company_url", "")))
+    if not domain:
+        domain = _extract_domain(str(lead.get("source_url", "")))
     name = str(lead.get("name", "")).strip().lower()
     if domain:
         return f"{domain}|{name}"
     return f"{company}|{name}"
+
+
+def _extract_domain(value: str) -> str:
+    lowered = value.strip().lower()
+    if not lowered:
+        return ""
+    return lowered.replace("https://", "").replace("http://", "").split("/")[0].strip()
+
+
+def _source_reliability_score(source_type: str, source_url: str) -> int:
+    score = 0
+    st = (source_type or "").strip().lower()
+    su = (source_url or "").strip().lower()
+    if st in _SOURCE_RELIABILITY:
+        score += _SOURCE_RELIABILITY[st]
+    if "linkedin.com" in su:
+        score += 8
+    if any(host in su for host in ["crunchbase.com", "sec.gov", "github.com"]):
+        score += 8
+    if su.startswith("http"):
+        score += 6
+    return min(score, 30)
+
+
+def _merge_lead_records(primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(primary)
+    if int(secondary.get("icp_score", 0)) > int(primary.get("icp_score", 0)):
+        merged = dict(secondary)
+
+    left = primary.get("signals", [])
+    right = secondary.get("signals", [])
+    merged_signals: list[str] = []
+    seen: set[str] = set()
+    for item in [*(left if isinstance(left, list) else []), *(right if isinstance(right, list) else [])]:
+        text = str(item).strip()
+        if text and text not in seen:
+            seen.add(text)
+            merged_signals.append(text)
+    if merged_signals:
+        merged["signals"] = merged_signals
+
+    for field in ("source_url", "public_profile_url", "company_domain", "work_location"):
+        if not merged.get(field):
+            candidate = secondary.get(field) or primary.get(field)
+            if candidate:
+                merged[field] = candidate
+    return merged
 
 
 def get_tool_schema_xml() -> str:
@@ -1141,6 +1234,7 @@ def _score_lead(
 def _rank_leads(leads: list[dict[str, Any]], top_n: int = 10) -> dict[str, Any]:
     deduped: dict[str, dict[str, Any]] = {}
     dropped = 0
+    filtered_low_evidence = 0
     for lead in leads:
         if not isinstance(lead, dict):
             dropped += 1
@@ -1157,14 +1251,20 @@ def _rank_leads(leads: list[dict[str, Any]], top_n: int = 10) -> dict[str, Any]:
             source_url=str(lead.get("source_url", "")),
             public_profile_url=str(lead.get("public_profile_url", "")),
             company_domain=str(lead.get("company_domain", "")),
+            source_type=str(lead.get("source_type", "")),
         )
         icp_score = _composite_icp_score(components)
         candidate = dict(lead)
         candidate.update(components)
         candidate["icp_score"] = icp_score
+        if components["evidence_score"] < max(0, config.MIN_EVIDENCE_SCORE):
+            filtered_low_evidence += 1
+            continue
         prev = deduped.get(key)
-        if prev is None or candidate["icp_score"] > int(prev.get("icp_score", 0)):
+        if prev is None:
             deduped[key] = candidate
+        else:
+            deduped[key] = _merge_lead_records(prev, candidate)
 
     ranked = sorted(deduped.values(), key=lambda item: int(item.get("icp_score", 0)), reverse=True)
     return {
@@ -1172,6 +1272,8 @@ def _rank_leads(leads: list[dict[str, Any]], top_n: int = 10) -> dict[str, Any]:
         "input_count": len(leads),
         "unique_count": len(ranked),
         "dropped_count": dropped,
+        "filtered_low_evidence": filtered_low_evidence,
+        "min_evidence_score": max(0, config.MIN_EVIDENCE_SCORE),
         "results": ranked[: max(1, top_n)],
     }
 
@@ -1197,6 +1299,13 @@ def _recommend_playbook_actions(leads: list[dict[str, Any]], objective: str) -> 
                 "reason": "Insufficient qualified leads. Expand signals to local news, jobs, and conference sources.",
             }
         )
+    else:
+        actions.append(
+            {
+                "action": "qa_gate_before_outreach",
+                "reason": "Only save/outreach leads where evidence_score and icp_score meet thresholds.",
+            }
+        )
     return {
         "ok": True,
         "objective": objective,
@@ -1205,11 +1314,59 @@ def _recommend_playbook_actions(leads: list[dict[str, Any]], objective: str) -> 
     }
 
 
+def _orchestrate_playbook(
+    leads: list[dict[str, Any]],
+    objective: str,
+    max_outreach: int = 3,
+) -> dict[str, Any]:
+    ranked = _rank_leads(leads, top_n=max(1, max_outreach * 2))
+    candidates = ranked.get("results", [])
+    selected = [
+        lead for lead in candidates
+        if int(lead.get("icp_score", 0)) >= config.ICP_MIN_SCORE
+        and int(lead.get("evidence_score", 0)) >= config.MIN_EVIDENCE_SCORE
+    ][:max(1, max_outreach)]
+    return {
+        "ok": True,
+        "objective": objective,
+        "selected_for_outreach": selected,
+        "selection_count": len(selected),
+        "gates": {
+            "icp_min_score": config.ICP_MIN_SCORE,
+            "min_evidence_score": config.MIN_EVIDENCE_SCORE,
+        },
+        "next_step": "save_then_draft_outreach" if selected else "collect_more_signals",
+    }
+
+
 def _save_lead(**payload: Any) -> dict[str, Any]:
     cleaned = _filter_public_fields(payload)
     validation_error = _validate_public_lead(cleaned)
     if validation_error:
         return {"ok": False, "saved": False, "error": validation_error, "lead": cleaned}
+    lead_signals = cleaned.get("signals", []) if isinstance(cleaned.get("signals"), list) else []
+    components = _score_components(
+        name=str(cleaned.get("name", "")),
+        title=str(cleaned.get("title", "")),
+        company=str(cleaned.get("company", "")),
+        company_size=cleaned.get("company_size"),
+        industry=str(cleaned.get("industry", "")),
+        signals=lead_signals,
+        work_location=str(cleaned.get("work_location", "")),
+        source_url=str(cleaned.get("source_url", "")),
+        public_profile_url=str(cleaned.get("public_profile_url", "")),
+        company_domain=str(cleaned.get("company_domain", "")),
+        source_type=str(cleaned.get("source_type", "")),
+    )
+    computed_icp = _composite_icp_score(components)
+    cleaned["attraction_score"] = components["attraction_score"]
+    cleaned["zero_defect_score"] = components["zero_defect_score"]
+    cleaned["evidence_score"] = components["evidence_score"]
+    cleaned["icp_score"] = int(cleaned.get("icp_score", computed_icp) or computed_icp)
+    if cleaned["icp_score"] < config.ICP_MIN_SCORE:
+        return {"ok": False, "saved": False, "error": f"Lead score below ICP threshold ({config.ICP_MIN_SCORE}).", "lead": cleaned}
+    if components["evidence_score"] < config.MIN_EVIDENCE_SCORE:
+        return {"ok": False, "saved": False, "error": f"Lead evidence below threshold ({config.MIN_EVIDENCE_SCORE}).", "lead": cleaned}
     if "observed_at" not in cleaned:
         cleaned["observed_at"] = datetime.now(timezone.utc).isoformat()
     persistence = save_public_lead(cleaned)
@@ -1277,6 +1434,7 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         "score_lead": _score_lead,
         "rank_leads": _rank_leads,
         "recommend_playbook_actions": _recommend_playbook_actions,
+        "orchestrate_playbook": _orchestrate_playbook,
         "save_lead": _save_lead,
         "draft_outreach": _draft_outreach,
     }
