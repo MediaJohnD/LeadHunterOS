@@ -28,11 +28,11 @@ lxml>=5.2.1
 
 # ── Database (optional - SQLite works out of box) ────────────────────────────
 sqlalchemy>=2.0.30
-# psycopg2-binary>=2.9.9    # Uncomment for PostgreSQL production use
+psycopg2-binary>=2.9.9
+dnspython>=2.6.1
+jobspy>=1.1.80
 
 # ── US-based API clients (optional enrichment) ───────────────────────────────
-# praw>=7.7.1               # Reddit (US company) - uncomment if using Reddit tool
-# newsapi-python>=0.2.7     # NewsAPI (US company) - uncomment if using news tool
 # sendgrid>=6.11.0          # SendGrid / Twilio (US company) - uncomment for email outreach
 
 # ── REMOVED (no longer needed) ───────────────────────────────────────────────

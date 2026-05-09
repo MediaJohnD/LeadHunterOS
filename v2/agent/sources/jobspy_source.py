@@ -109,6 +109,21 @@ def search_jobs(
     return unique
 
 
+def search_jobs_by_icp(
+    icp_keywords: list[str],
+    location: str = "United States",
+    hours_old: int = 720,
+    results_wanted: int = 50,
+) -> list[dict[str, Any]]:
+    """Search jobs with ICP keywords and return deduplicated company signals."""
+    return search_jobs(
+        job_titles=icp_keywords,
+        location=location,
+        hours_old=hours_old,
+        results_wanted=results_wanted,
+    )
+
+
 def extract_hiring_signals(jobs: list[dict]) -> list[dict]:
     """Identify companies with strong hiring signals (multiple open roles).
 

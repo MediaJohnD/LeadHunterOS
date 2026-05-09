@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   # PostgreSQL - local database
   postgres:
@@ -35,8 +33,8 @@ services:
     environment:
       # Override DB host for Docker networking
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/leadhunteros
-      # Ollama runs on HOST machine, not in Docker
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      # Lemonade runs on the host machine by default.
+      LEMONADE_BASE_URL: http://host.docker.internal:13305/api/v1
     restart: unless-stopped
     volumes:
       - .:/app
@@ -46,6 +44,5 @@ services:
 volumes:
   postgres_data:
 
-# NOTE: Ollama runs locally on your machine (not in Docker)
-# Make sure `ollama serve` is running before starting this stack
-# Run: ollama pull adrienbrault/nous-hermes2pro-llama3-8b:Q4_K_M
+# NOTE: Lemonade runs locally on your machine by default.
+# Make sure `lemonade serve` is running before starting the agent service.

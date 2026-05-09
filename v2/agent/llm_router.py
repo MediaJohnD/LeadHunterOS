@@ -29,8 +29,8 @@ import config
 class LLMRouter:
     """Routes LLM calls across Lemonade (local AMD), Claude, OpenAI, and Perplexity."""
 
-    def __init__(self) -> None:
-        self.backend = config.DEFAULT_LLM_BACKEND
+    def __init__(self, preferred_backend: str | None = None) -> None:
+        self.backend = preferred_backend or config.DEFAULT_LLM_BACKEND
         self.available_backends: list[str] = []
         self._detect_backends()
         logger.info(
@@ -42,12 +42,17 @@ class LLMRouter:
         # Always try Lemonade first
         if self._check_lemonade():
             self.available_backends.append("local")
-        if config.ANTHROPIC_API_KEY:
+        if self._has_real_key(config.ANTHROPIC_API_KEY, "sk-ant-your-key-here"):
             self.available_backends.append("claude")
-        if config.OPENAI_API_KEY:
+        if self._has_real_key(config.OPENAI_API_KEY, "sk-your-key-here"):
             self.available_backends.append("openai")
-        if config.PERPLEXITY_API_KEY:
+        if self._has_real_key(config.PERPLEXITY_API_KEY, "pplx-your-key-here"):
             self.available_backends.append("perplexity")
+
+    @staticmethod
+    def _has_real_key(value: str, placeholder: str) -> bool:
+        value = (value or "").strip()
+        return bool(value and value != placeholder and "your-key" not in value)
 
     def _check_lemonade(self) -> bool:
         """Check if Lemonade server is running."""
@@ -118,15 +123,21 @@ class LLMRouter:
 
     def _get_backend_order(self, task_type: str) -> list[str]:
         """Return backend priority order based on task type."""
+        if self.backend in {"local", "claude", "openai", "perplexity"}:
+            preferred = [self.backend]
+        else:
+            preferred = []
+
         if task_type == "research":
             # Perplexity is best for web research, then local, then others
-            return ["perplexity", "local", "claude", "openai"]
+            order = ["perplexity", "local", "claude", "openai"]
         elif task_type == "heavy":
             # Heavy reasoning: Claude first, then local, then OpenAI
-            return ["claude", "local", "openai", "perplexity"]
+            order = ["claude", "local", "openai", "perplexity"]
         else:
             # Default: local first (free + private), then cloud fallbacks
-            return ["local", "claude", "openai", "perplexity"]
+            order = ["local", "claude", "openai", "perplexity"]
+        return preferred + [backend for backend in order if backend not in preferred]
 
     def _call_lemonade(self, messages: list[dict]) -> dict[str, Any]:
         """Call Lemonade local AMD server (OpenAI-compatible API).
@@ -268,7 +279,7 @@ class LLMRouter:
             "lemonade_url": config.LEMONADE_BASE_URL,
             "lemonade_model": config.LEMONADE_MODEL,
             "lemonade_reachable": lemonade_ok,
-            "claude_configured": bool(config.ANTHROPIC_API_KEY),
-            "openai_configured": bool(config.OPENAI_API_KEY),
-            "perplexity_configured": bool(config.PERPLEXITY_API_KEY),
+            "claude_configured": self._has_real_key(config.ANTHROPIC_API_KEY, "sk-ant-your-key-here"),
+            "openai_configured": self._has_real_key(config.OPENAI_API_KEY, "sk-your-key-here"),
+            "perplexity_configured": self._has_real_key(config.PERPLEXITY_API_KEY, "pplx-your-key-here"),
         }

@@ -29,13 +29,13 @@ DEFAULT_OBJECTIVE = (
 )
 
 
-def run_once(objective: str) -> None:
+def run_once(objective: str, llm_backend: str | None = None) -> None:
     """Run one agent cycle."""
     logger.info(f"Starting LeadHunterOS agent cycle | {datetime.now(timezone.utc).isoformat()}")
     logger.info(f"Objective: {objective[:120]}..." if len(objective) > 120 else f"Objective: {objective}")
 
     try:
-        agent = HermesAgent()
+        agent = HermesAgent(preferred_backend=llm_backend)
         result = agent.run(objective)
         logger.success(f"Agent cycle complete. Result preview: {str(result)[:300]}")
     except Exception as e:
@@ -43,7 +43,7 @@ def run_once(objective: str) -> None:
         raise
 
 
-def run_scheduled(objective: str, interval_minutes: int) -> None:
+def run_scheduled(objective: str, interval_minutes: int, llm_backend: str | None = None) -> None:
     """Run agent on a repeating schedule using stdlib time.sleep().
 
     No apscheduler or external dependencies needed.
@@ -52,7 +52,7 @@ def run_scheduled(objective: str, interval_minutes: int) -> None:
     logger.info(f"Scheduled mode: running every {interval_minutes} minutes. Press Ctrl+C to stop.")
 
     # Run immediately on first start
-    run_once(objective)
+    run_once(objective, llm_backend=llm_backend)
 
     while True:
         next_run = datetime.now(timezone.utc)
@@ -63,7 +63,7 @@ def run_scheduled(objective: str, interval_minutes: int) -> None:
         except KeyboardInterrupt:
             logger.info("Scheduled run interrupted by user. Exiting.")
             sys.exit(0)
-        run_once(objective)
+        run_once(objective, llm_backend=llm_backend)
 
 
 def show_status() -> None:
@@ -116,6 +116,12 @@ def main() -> None:
         action="store_true",
         help="Show backend status and exit",
     )
+    parser.add_argument(
+        "--llm",
+        choices=["local", "claude", "openai", "perplexity"],
+        default=None,
+        help="Preferred LLM backend for this run",
+    )
     args = parser.parse_args()
 
     # Configure logger
@@ -137,9 +143,9 @@ def main() -> None:
         sys.exit(0)
 
     if args.schedule:
-        run_scheduled(args.objective, args.interval)
+        run_scheduled(args.objective, args.interval, llm_backend=args.llm)
     else:
-        run_once(args.objective)
+        run_once(args.objective, llm_backend=args.llm)
 
 
 if __name__ == "__main__":

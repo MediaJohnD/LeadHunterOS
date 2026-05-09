@@ -19,6 +19,7 @@ from typing import Any
 from loguru import logger
 
 import config
+from agent.database import save_public_lead
 
 try:
     from agent.sources import (
@@ -38,6 +39,13 @@ try:
         generate_email_candidates,
         verify_mx,
         scrape_website_metadata,
+        get_all_public_profiles,
+        search_wellfound_jobs,
+        search_crunchbase_news,
+        scrape_company_team_page,
+        search_conference_speakers,
+        search_orcid_profiles,
+        search_glassdoor_news,
     )
 except Exception as exc:  # pragma: no cover
     logger.warning(f"agent.sources import failed: {exc}")
@@ -57,6 +65,13 @@ except Exception as exc:  # pragma: no cover
     generate_email_candidates = None
     verify_mx = None
     scrape_website_metadata = None
+    get_all_public_profiles = None
+    search_wellfound_jobs = None
+    search_crunchbase_news = None
+    scrape_company_team_page = None
+    search_conference_speakers = None
+    search_orcid_profiles = None
+    search_glassdoor_news = None
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -268,6 +283,91 @@ TOOLS: list[dict[str, Any]] = [
         }
     },
     {
+        "name": "search_public_profiles",
+        "description": "Aggregate public profile and cross-reference signals from Wellfound, Crunchbase News, team pages, Sessionize, ORCID, and Glassdoor.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max results to return. Default 20."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "search_wellfound_jobs",
+        "description": "Search Wellfound public jobs for company and role signals.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max results to return. Default 20."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "search_crunchbase_news",
+        "description": "Search public Crunchbase News RSS for funding and company signals.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max results to return. Default 20."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "scrape_team_page",
+        "description": "Extract public business bio fields from a company's own team/about pages.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "company_name": {"type": "string"},
+                "domain": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max people to return. Default 10."}
+            },
+            "required": ["company_name", "domain"]
+        }
+    },
+    {
+        "name": "search_conference_speakers",
+        "description": "Search public Sessionize speaker profiles for professional identity signals.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max results to return. Default 20."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "search_orcid_profiles",
+        "description": "Search ORCID public profiles for academic and research ICP segments.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max results to return. Default 15."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "search_glassdoor_signals",
+        "description": "Search public Glassdoor blog RSS for company culture and hiring signals.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max results to return. Default 15."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
         "name": "search_apollo",
         "description": "Search Apollo.io for leads by job title, industry, company size, and keywords. Use as last-mile contact resolution after public-signal discovery.",
         "parameters": {
@@ -420,8 +520,7 @@ def _slice_results(results: Any, limit: int) -> list[Any]:
 def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[str, Any]:
     if get_all_signals is None:
         return {"ok": False, "error": "get_all_signals is not available"}
-    # get_all_signals takes keywords: list[str]
-    results = get_all_signals(keywords=[query], days_back=days_back)
+    results = get_all_signals(keywords=[query], daysback=days_back)
     sliced = _slice_results(results, limit)
     return {"ok": True, "query": query, "count": len(sliced), "results": sliced}
 
@@ -431,15 +530,14 @@ def _search_reddit_signals(query: str, subreddit: str = "", limit: int = 10) -> 
         return {"ok": False, "error": "search_reddit is not available"}
     # search_reddit takes keywords: list[str], subreddits: list[str] | None
     subreddits = [subreddit] if subreddit else None
-    results = search_reddit(keywords=[query], subreddits=subreddits)
+    results = search_reddit(keywords=[query], subreddits=subreddits, max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_news_signals(query: str, days_back: int = 30, limit: int = 10) -> dict[str, Any]:
     if search_google_news is None:
         return {"ok": False, "error": "search_google_news is not available"}
-    # search_google_news takes keywords: list[str]
-    results = search_google_news(keywords=[query], days_back=days_back)
+    results = search_google_news(keywords=[query], daysback=days_back, max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -447,7 +545,7 @@ def _search_github_signals(query: str, limit: int = 10) -> dict[str, Any]:
     if search_github_repos is None:
         return {"ok": False, "error": "search_github_repos is not available"}
     # search_github_repos takes keywords: list[str]
-    results = search_github_repos(keywords=[query])
+    results = search_github_repos(keywords=[query], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -455,7 +553,7 @@ def _search_hn_signals(query: str, limit: int = 10) -> dict[str, Any]:
     if search_hackernews is None:
         return {"ok": False, "error": "search_hackernews is not available"}
     # search_hackernews takes keywords: list[str]
-    results = search_hackernews(keywords=[query])
+    results = search_hackernews(keywords=[query], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -463,7 +561,7 @@ def _search_producthunt_signals(query: str, limit: int = 10) -> dict[str, Any]:
     if search_producthunt_launches is None:
         return {"ok": False, "error": "search_producthunt_launches is not available"}
     # search_producthunt_launches takes keywords: list[str]
-    results = search_producthunt_launches(keywords=[query])
+    results = search_producthunt_launches(keywords=[query], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -471,7 +569,7 @@ def _search_remote_hiring_signals(query: str, limit: int = 10) -> dict[str, Any]
     if search_remoteok_jobs is None:
         return {"ok": False, "error": "search_remoteok_jobs is not available"}
     # search_remoteok_jobs takes keywords: list[str]
-    results = search_remoteok_jobs(keywords=[query])
+    results = search_remoteok_jobs(keywords=[query], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -499,6 +597,7 @@ def _search_jobs_public(query: str, location: str = "", days_back: int = 30, lim
         job_titles=[query],
         location=location or "United States",
         hours_old=days_back * 24,
+        results_wanted=limit,
     )
     return {"ok": True, "results": _slice_results(results, limit)}
 
@@ -516,6 +615,7 @@ def _search_jobs_by_icp_tool(
         job_titles=icp_keywords,
         location=location or "United States",
         hours_old=days_back * 24,
+        results_wanted=limit,
     )
     return {"ok": True, "results": _slice_results(results, limit)}
 
@@ -576,7 +676,7 @@ def _generate_email_candidates_public(name: str, domain: str) -> dict[str, Any]:
     parts = name.strip().split(None, 1)
     first_name = parts[0] if parts else name
     last_name = parts[1] if len(parts) > 1 else ""
-    results = generate_email_candidates(first_name=first_name, last_name=last_name, domain=domain)
+    results = generate_email_candidates(firstname=first_name, lastname=last_name, domain=domain)
     return {"ok": True, "results": results}
 
 
@@ -585,6 +685,55 @@ def _verify_mx_public(domain: str) -> dict[str, Any]:
         return {"ok": False, "error": "verify_mx is not available"}
     result = verify_mx(domain=domain)
     return {"ok": True, "result": result}
+
+
+def _search_public_profiles(query: str, limit: int = 20) -> dict[str, Any]:
+    if get_all_public_profiles is None:
+        return {"ok": False, "error": "get_all_public_profiles is not available"}
+    results = get_all_public_profiles(keywords=[query], max_results=limit)
+    return {"ok": True, "results": _slice_results(results, limit)}
+
+
+def _search_wellfound_jobs(query: str, limit: int = 20) -> dict[str, Any]:
+    if search_wellfound_jobs is None:
+        return {"ok": False, "error": "search_wellfound_jobs is not available"}
+    results = search_wellfound_jobs(keywords=[query], max_results=limit)
+    return {"ok": True, "results": _slice_results(results, limit)}
+
+
+def _search_crunchbase_news(query: str, limit: int = 20) -> dict[str, Any]:
+    if search_crunchbase_news is None:
+        return {"ok": False, "error": "search_crunchbase_news is not available"}
+    results = search_crunchbase_news(keywords=[query], max_results=limit)
+    return {"ok": True, "results": _slice_results(results, limit)}
+
+
+def _scrape_team_page(company_name: str, domain: str, limit: int = 10) -> dict[str, Any]:
+    if scrape_company_team_page is None:
+        return {"ok": False, "error": "scrape_company_team_page is not available"}
+    results = scrape_company_team_page(company_name=company_name, domain=domain, max_people=limit)
+    return {"ok": True, "company": company_name, "domain": domain, "count": len(results), "people": results}
+
+
+def _search_conference_speakers(query: str, limit: int = 20) -> dict[str, Any]:
+    if search_conference_speakers is None:
+        return {"ok": False, "error": "search_conference_speakers is not available"}
+    results = search_conference_speakers(keywords=[query], max_results=limit)
+    return {"ok": True, "results": _slice_results(results, limit)}
+
+
+def _search_orcid_profiles(query: str, limit: int = 15) -> dict[str, Any]:
+    if search_orcid_profiles is None:
+        return {"ok": False, "error": "search_orcid_profiles is not available"}
+    results = search_orcid_profiles(keywords=[query], max_results=limit)
+    return {"ok": True, "results": _slice_results(results, limit)}
+
+
+def _search_glassdoor_signals(query: str, limit: int = 15) -> dict[str, Any]:
+    if search_glassdoor_news is None:
+        return {"ok": False, "error": "search_glassdoor_news is not available"}
+    results = search_glassdoor_news(keywords=[query], max_results=limit)
+    return {"ok": True, "results": _slice_results(results, limit)}
 
 
 # Placeholders — Apollo/Hunter wired to live API calls when keys are present.
@@ -675,9 +824,16 @@ def _score_lead(
 
 def _save_lead(**payload: Any) -> dict[str, Any]:
     cleaned = _filter_public_fields(payload)
-    cleaned["saved_at"] = datetime.now(timezone.utc).isoformat()
-    logger.info(f"Lead saved: {payload.get('name')} @ {payload.get('company')} (score={payload.get('icp_score')})")
-    return {"ok": True, "saved": True, "lead": cleaned}
+    if "observed_at" not in cleaned:
+        cleaned["observed_at"] = datetime.now(timezone.utc).isoformat()
+    persistence = save_public_lead(cleaned)
+    cleaned["id"] = persistence["id"]
+    cleaned["saved_at"] = persistence["saved_at"]
+    logger.info(
+        f"Lead saved: {payload.get('name')} @ {payload.get('company')} "
+        f"(score={payload.get('icp_score')}, id={persistence['id']})"
+    )
+    return {"ok": True, "saved": True, "lead": cleaned, "db": persistence}
 
 
 def _draft_outreach(
@@ -719,6 +875,13 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         "scrape_company_website": _scrape_company_website,
         "generate_email_candidates_public": _generate_email_candidates_public,
         "verify_mx_public": _verify_mx_public,
+        "search_public_profiles": _search_public_profiles,
+        "search_wellfound_jobs": _search_wellfound_jobs,
+        "search_crunchbase_news": _search_crunchbase_news,
+        "scrape_team_page": _scrape_team_page,
+        "search_conference_speakers": _search_conference_speakers,
+        "search_orcid_profiles": _search_orcid_profiles,
+        "search_glassdoor_signals": _search_glassdoor_signals,
         "search_apollo": _search_apollo,
         "enrich_apollo": _enrich_apollo,
         "find_email_hunter": _find_email_hunter,

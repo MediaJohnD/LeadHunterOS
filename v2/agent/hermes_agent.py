@@ -26,14 +26,14 @@ from typing import Any
 from loguru import logger
 
 import config
-from agent.tools import TOOLS, dispatch_tool
+from agent.tools import dispatch_tool, get_tool_schema_xml
 from agent.llm_router import LLMRouter
 
 
 # ---------------------------------------------------------------------------
 # Hermes system prompt - defines the agent's tool-calling contract
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are LeadHunterOS, a B2B lead-hunting Hermes agent.
+SYSTEM_PROMPT_TEMPLATE = """You are LeadHunterOS, a B2B lead-hunting Hermes agent.
 You beat Gojiberry, Intently, and Unify GTM by combining local AMD inference
 with real-time web research, ICP scoring, and personalized outreach.
 
@@ -47,10 +47,10 @@ After a tool is called you will receive a <tool_response> with the result.
 Think step by step. When you have enough information to complete the objective,
 write your final answer starting with FINAL ANSWER:
 
-Available tools:
-<tools>
-SEARCH_LEADS, ENRICH_LEAD, SCORE_LEAD, SAVE_LEAD, DRAFT_OUTREACH, WEB_SEARCH
-</tools>
+Use public-signal tools first, then enrich, score, save qualified leads, and
+draft outreach. Never invent tool names or parameters; use only this schema:
+
+{tool_schema}
 """
 
 # Max tool-call iterations before giving up
@@ -60,8 +60,8 @@ MAX_ITERATIONS = 15
 class HermesAgent:
     """True Hermes agent with XML tool-calling and ReAct loop."""
 
-    def __init__(self) -> None:
-        self.router = LLMRouter()
+    def __init__(self, preferred_backend: str | None = None) -> None:
+        self.router = LLMRouter(preferred_backend=preferred_backend)
         self.session_id = str(uuid.uuid4())[:8]
         # Use available_backends (correct attribute name from LLMRouter)
         logger.info(
@@ -75,7 +75,7 @@ class HermesAgent:
         logger.info(f"[{self.session_id}] Objective: {objective[:120]}")
 
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(tool_schema=get_tool_schema_xml())},
             {"role": "user", "content": objective},
         ]
 
@@ -130,7 +130,7 @@ class HermesAgent:
                 try:
                     result = dispatch_tool(tool_name, tool_args)
                     # Track saved leads for summary
-                    if tool_name == "SAVE_LEAD" and result.get("saved"):
+                    if tool_name == "save_lead" and result.get("saved"):
                         leads_saved.append(result)
                 except Exception as e:
                     result = {"error": str(e), "tool": tool_name}

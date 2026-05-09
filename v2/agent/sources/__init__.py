@@ -43,7 +43,7 @@ from .enrich_source import (
     verify_mx,
     scrape_website_metadata,
 )
-from .public_profiles_source import (
+from public_profiles_source import (
     get_all_public_profiles,
     search_wellfound_jobs,
     search_crunchbase_news,
