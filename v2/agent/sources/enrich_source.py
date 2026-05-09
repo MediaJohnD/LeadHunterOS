@@ -1,7 +1,9 @@
-"""enrich_source.py - Zero-cost lead enrichment. No API key required for core features.
+"""enrich_source.py - Zero-cost lead enrichment.
+
+No API key required for core features.
 
 Capabilities (all free / open-source):
-  - Email pattern guessing  (first.last@domain, flast@domain, etc.)
+  - Email pattern guessing  (first.last@domain, f.last@domain, etc.)
   - MX record verification  (dnspython - confirms domain accepts email)
   - SMTP RCPT-TO verify     (optional - checks if mailbox exists)
   - Website metadata scrape (title, description, tech stack hints via headers)
@@ -33,15 +35,14 @@ except ImportError:
     _DNS_AVAILABLE = False
     logger.warning("dnspython not installed - MX verification disabled. pip install dnspython")
 
-_SESSION = requests.Session()
-_SESSION.headers.update({
+SESSION = requests.Session()
+SESSION.headers.update({
     "User-Agent": "LeadHunterOS research@leadhunteros.local",
     "Accept": "text/html,application/xhtml+xml,application/json",
 })
 
-
 # ---------------------------------------------------------------------------
-# Email pattern generation
+# Email candidates
 # ---------------------------------------------------------------------------
 
 EMAIL_PATTERNS = [
@@ -56,20 +57,25 @@ EMAIL_PATTERNS = [
 
 
 def generate_email_candidates(
-    first_name: str,
-    last_name: str,
+    firstname: str,
+    lastname: str,
     domain: str,
 ) -> list[str]:
     """Generate likely email address candidates for a person."""
-    first = first_name.lower().strip()
-    last = last_name.lower().strip()
+    first = firstname.lower().strip()
+    last = lastname.lower().strip()
     f = first[0] if first else ""
-    domain = domain.lower().strip().lstrip("www.").lstrip("https://").lstrip("http://")
+    domain = domain.lower().strip()
+    for prefix in ["https://", "http://", "www."]:
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):]
+    domain = domain.split("/")[0]  # strip any path component
+
     candidates = []
     for pattern in EMAIL_PATTERNS:
         try:
             email = pattern.format(first=first, last=last, f=f, domain=domain)
-            if re.match(r"^[\w.+-]+@[\w.-]+\.[a-z]{2,}$", email):
+            if re.match(r"[^@]+@[^@]+\.[a-z]{2,}", email):
                 candidates.append(email)
         except Exception:
             pass
@@ -77,7 +83,7 @@ def generate_email_candidates(
 
 
 # ---------------------------------------------------------------------------
-# MX verification  (requires dnspython)
+# MX verification
 # ---------------------------------------------------------------------------
 
 def verify_mx(domain: str) -> bool:
@@ -93,7 +99,7 @@ def verify_mx(domain: str) -> bool:
 
 
 def smtp_verify_email(email: str, timeout: int = 5) -> bool | None:
-    """Attempt RCPT-TO SMTP verification. Returns True/False/None (None=inconclusive).
+    """Attempt RCPT-TO SMTP verification. Returns True/False/None (inconclusive).
 
     Note: Many mail servers return 250 regardless (catch-all) or block port 25.
     Use as a weak signal only.
@@ -115,7 +121,7 @@ def smtp_verify_email(email: str, timeout: int = 5) -> bool | None:
             sock.sendall(f"RCPT TO:<{email}>\r\n".encode())
             rcpt_resp = sock.recv(1024).decode(errors="ignore")
             sock.sendall(b"QUIT\r\n")
-        return rcpt_resp.startswith("250")
+            return rcpt_resp.startswith("250")
     except Exception:
         return None
 
@@ -126,12 +132,18 @@ def smtp_verify_email(email: str, timeout: int = 5) -> bool | None:
 
 def scrape_website_metadata(domain: str) -> dict:
     """Scrape basic metadata from a company website."""
-    result = {"website_title": "", "website_description": "", "tech_hints": [], "website_status": None}
-    for scheme in ("https", "http"):
+    result: dict[str, Any] = {
+        "website_title": "",
+        "website_description": "",
+        "tech_hints": [],
+        "website_status": None,
+    }
+    for scheme in ["https", "http"]:
         try:
             url = f"{scheme}://{domain}"
-            resp = _SESSION.get(url, timeout=8, allow_redirects=True)
+            resp = SESSION.get(url, timeout=8, allow_redirects=True)
             result["website_status"] = resp.status_code
+
             # tech hints from headers
             server = resp.headers.get("Server", "")
             powered = resp.headers.get("X-Powered-By", "")
@@ -139,41 +151,42 @@ def scrape_website_metadata(domain: str) -> dict:
                 result["tech_hints"].append(f"Server:{server}")
             if powered:
                 result["tech_hints"].append(f"PoweredBy:{powered}")
-            # parse title / meta description from HTML
+
             html = resp.text[:20000]  # only read first 20KB
-            title_match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
+            title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
             if title_match:
                 result["website_title"] = title_match.group(1).strip()
             desc_match = re.search(
-                r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)["\']',
-                html, re.IGNORECASE
+                r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^\'"]+)',
+                html, re.IGNORECASE,
             )
             if desc_match:
                 result["website_description"] = desc_match.group(1).strip()
+
             # tech stack hints from HTML body
-            tech_patterns = {
-                "Salesforce": r"salesforce",
-                "HubSpot": r"hubspot",
-                "Segment": r"segment\.com",
-                "Google Analytics": r"google-analytics|gtag",
-                "Intercom": r"intercom",
-                "Drift": r"drift\.com",
-                "React": r"react\.js|reactjs",
-                "Next.js": r"next\.js|_next",
-                "WordPress": r"wp-content|wordpress",
-            }
-            for tech, pattern in tech_patterns.items():
+            tech_patterns = [
+                ("Salesforce", r"salesforce"),
+                ("HubSpot", r"hubspot"),
+                ("Segment", r"segment\.com"),
+                ("Google Analytics", r"google-analytics|gtag"),
+                ("Intercom", r"intercom"),
+                ("Drift", r"drift\.com"),
+                ("React", r"react\.js|reactjs"),
+                ("Next.js", r"next\.js|next"),
+                ("WordPress", r"wp-content|wordpress"),
+            ]
+            for tech, pattern in tech_patterns:
                 if re.search(pattern, html, re.IGNORECASE):
                     result["tech_hints"].append(tech)
             break
         except Exception as exc:
-            logger.debug(f"Website scrape failed ({scheme}://{domain}): {exc}")
+            logger.debug(f"Website scrape failed {scheme}://{domain}: {exc}")
     result["tech_hints"] = list(set(result["tech_hints"]))
     return result
 
 
 # ---------------------------------------------------------------------------
-# Clearbit Logo (free, no auth)
+# Clearbit logo (free, no key)
 # ---------------------------------------------------------------------------
 
 def get_company_logo_url(domain: str) -> str:
@@ -182,7 +195,7 @@ def get_company_logo_url(domain: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# RDAP / WHOIS  (public IANA endpoint)
+# RDAP whois
 # ---------------------------------------------------------------------------
 
 def get_domain_rdap(domain: str) -> dict:
@@ -198,8 +211,9 @@ def get_domain_rdap(domain: str) -> dict:
             "rdap_expiry": events.get("expiration", ""),
             "rdap_updated": events.get("last changed", ""),
             "rdap_registrar": next(
-                (e.get("vcardArray", [[]])[1] for e in data.get("entities", [])
-                 if "registrar" in e.get("roles", [])), ""
+                (e.get("vcardArray", [None, []])[1] for e in data.get("entities", [])
+                 if "registrar" in e.get("roles", [])),
+                "",
             ),
         }
     except Exception as exc:
@@ -208,7 +222,7 @@ def get_domain_rdap(domain: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# LinkedIn search URL builder  (no scraping - just generates search links)
+# LinkedIn search URL builder (no scraping)
 # ---------------------------------------------------------------------------
 
 def build_linkedin_search_url(company_name: str, title: str = "") -> str:
@@ -218,7 +232,7 @@ def build_linkedin_search_url(company_name: str, title: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Full enrich pipeline
+# Primary enrichment pipeline
 # ---------------------------------------------------------------------------
 
 def enrich_lead(
