@@ -498,13 +498,13 @@ def _filter_public_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_tool_schema_xml() -> str:
-    """Return the full Hermes <tools> block with JSON schemas for every registered tool.
+    """Return a compact Hermes <tools> block with JSON schemas for every tool.
 
-    The Hermes function-calling spec requires the model to see each tool's full schema.
-    Inject this verbatim into the system prompt.
+    Lemonade's default llama.cpp context can be 4096 tokens. Minified JSON keeps
+    the full schema available without spending hundreds of tokens on whitespace.
     """
     tool_schemas = [{"type": "function", "function": t} for t in TOOLS]
-    return "<tools>\n" + json.dumps(tool_schemas, indent=2) + "\n</tools>"
+    return "<tools>" + json.dumps(tool_schemas, separators=(",", ":")) + "</tools>"
 
 
 def _slice_results(results: Any, limit: int) -> list[Any]:
