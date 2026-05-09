@@ -888,12 +888,18 @@ def _merge_lead_records(primary: dict[str, Any], secondary: dict[str, Any]) -> d
 
 
 def get_tool_schema_xml() -> str:
-    """Return a compact Hermes <tools> block with JSON schemas for every tool.
-
-    Lemonade's default llama.cpp context can be 4096 tokens. Minified JSON keeps
-    the full schema available without spending hundreds of tokens on whitespace.
-    """
-    tool_schemas = [{"type": "function", "function": t} for t in TOOLS]
+    """Return a minimal Hermes <tools> block sized for 4096-token local context."""
+    tool_schemas = []
+    for tool in TOOLS:
+        params = tool.get("parameters", {}).get("properties", {})
+        required = tool.get("parameters", {}).get("required", [])
+        tool_schemas.append(
+            {
+                "name": tool.get("name", ""),
+                "params": list(params.keys()),
+                "required": required,
+            }
+        )
     return "<tools>" + json.dumps(tool_schemas, separators=(",", ":")) + "</tools>"
 
 

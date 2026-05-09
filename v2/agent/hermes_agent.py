@@ -17,36 +17,23 @@ from agent.tools import TOOLS, dispatch_tool, get_tool_schema_xml
 
 def _build_system_prompt() -> str:
     """Build the Hermes system prompt from the live tool registry."""
-    return f"""You are LeadHunterOS, a B2B lead-hunting Hermes agent.
-Goal: discover, score, save, and draft outreach for high-fit B2B leads using public signals.
+    return f"""You are LeadHunterOS.
+Rules:
+1) Use public signals first, then enrichment, then ranking/orchestration.
+2) US scope only: {config.TARGET_COUNTRY}; exclude unclear/non-US leads.
+3) Never invent data. No placeholders.
+4) Save only leads meeting gates: icp_score >= {config.ICP_MIN_SCORE}.
+5) Draft outreach only for verified, saved leads.
+6) Max 3 tool calls per turn.
 
-Workflow: public signals first, public enrichment second, paid fallbacks only if needed,
-score every candidate, save only leads with icp_score >= {config.ICP_MIN_SCORE}, then draft outreach.
-Emit at most 3 tool calls per turn so local context stays small.
-Country scope is mandatory: only return leads whose operating country or country of origin matches
-{config.TARGET_COUNTRY}. If a candidate appears outside that scope or the country is unclear, exclude it.
-Never invent people, companies, domains, URLs, job titles, or signals.
-A lead is verified only if it has a real company or person plus at least one concrete public signal and
-at least one verifiable source such as a source URL, public profile URL, or company domain.
-Do not call save_lead or draft_outreach for placeholder, hypothetical, or weakly supported candidates.
-Draft outreach only for verified leads that were already scored and saved.
-Use rank_leads before final output so the top candidates are deduplicated and evidence-weighted.
-Use recommend_playbook_actions before final output to produce concrete next-step actions.
-Use orchestrate_playbook before final output to apply deterministic save/outreach gates.
+Tool call format:
+<tool_call>{{"name":"tool_name","arguments":{{...}}}}</tool_call>
 
-Use tools with exact Hermes XML:
+Finish with:
+FINAL ANSWER: concise summary + top leads + actions + gaps
 
-<tool_call>
-{{"name": "tool_name", "arguments": {{"param": "value"}}}}
-</tool_call>
-
-After tool responses, continue or finish with:
-FINAL ANSWER: <summary of leads found, scored, saved, and outreach drafted>
-
-Use only these tools/parameters:
-
-{get_tool_schema_xml()}
-"""
+Tools:
+{get_tool_schema_xml()}"""
 
 
 MAX_ITERATIONS = config.AGENT_MAX_ITERATIONS
@@ -211,7 +198,7 @@ class HermesAgent:
     def _assistant_history_entry(self, content: str, tool_calls: list[dict[str, Any]]) -> str:
         """Keep only the tool-call portion of assistant turns to preserve local context."""
         if not tool_calls:
-            return content[:600] + ("...[truncated]" if len(content) > 600 else "")
+            return content[:240] + ("...[truncated]" if len(content) > 240 else "")
 
         tool_blocks: list[str] = []
         for call in tool_calls[:3]:
@@ -227,25 +214,25 @@ class HermesAgent:
     def _compact_tool_result(self, value: Any, depth: int = 0) -> Any:
         """Keep tool observations useful but small enough for local 4096-token models."""
         if depth > 4:
-            return str(value)[:300]
+            return str(value)[:180]
         if isinstance(value, str):
-            return value if len(value) <= 500 else value[:500] + "...[truncated]"
+            return value if len(value) <= 280 else value[:280] + "...[truncated]"
         if isinstance(value, list):
-            compact = [self._compact_tool_result(item, depth + 1) for item in value[:3]]
-            if len(value) > 3:
-                compact.append({"truncated_count": len(value) - 3})
+            compact = [self._compact_tool_result(item, depth + 1) for item in value[:2]]
+            if len(value) > 2:
+                compact.append({"truncated_count": len(value) - 2})
             return compact
         if isinstance(value, dict):
             compact_dict: dict[str, Any] = {}
             for key, item in value.items():
                 if key in {"raw_signal_data", "description", "html", "content"}:
-                    compact_dict[key] = str(item)[:300] + ("...[truncated]" if len(str(item)) > 300 else "")
+                    compact_dict[key] = str(item)[:180] + ("...[truncated]" if len(str(item)) > 180 else "")
                 else:
                     compact_dict[key] = self._compact_tool_result(item, depth + 1)
             return compact_dict
         return value
 
-    def _fit_tool_responses(self, responses: list[str], max_chars: int = 7000) -> str:
+    def _fit_tool_responses(self, responses: list[str], max_chars: int = 3200) -> str:
         combined = "\n".join(responses)
         if len(combined) <= max_chars:
             return combined
