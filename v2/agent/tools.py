@@ -13,6 +13,7 @@ Goals:
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -508,6 +509,171 @@ def _scoped_query(query: str) -> str:
     return f"{query} {config.TARGET_COUNTRY} {config.TARGET_REGION}".strip()
 
 
+_QUERY_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "business", "businesses", "by",
+    "companies", "company", "customer", "defect", "find", "for", "from", "ga",
+    "georgia", "high", "in", "include", "is", "its", "local", "metro", "of",
+    "on", "only", "or", "small", "medium", "small-to-medium", "that", "the",
+    "their", "to", "united", "us", "usa", "using", "with",
+}
+
+_PLACEHOLDER_PHRASES = {
+    "john doe",
+    "jane smith",
+    "example company",
+    "example saas inc",
+    "test company",
+    "sample company",
+    "placeholder company",
+    "acme corp demo",
+}
+
+_PLACEHOLDER_TOKENS = {
+    "example",
+    "examplesaas",
+    "placeholder",
+    "sample",
+    "testco",
+    "testcorp",
+    "testuser",
+    "testlead",
+    "demo",
+    "fake",
+    "foobar",
+}
+
+_DEFAULT_JOB_TITLES = [
+    "operations manager",
+    "office manager",
+    "sales manager",
+    "customer success manager",
+    "service manager",
+]
+
+_JOB_TITLE_HINTS = {
+    "agency": ["account manager", "project manager", "client success manager"],
+    "agencies": ["account manager", "project manager", "client success manager"],
+    "accounting": ["office manager", "client services manager"],
+    "healthcare": ["office manager", "patient services manager"],
+    "home": ["service manager", "dispatcher"],
+    "home services": ["service manager", "dispatcher"],
+    "it": ["project manager", "customer success manager"],
+    "legal": ["office manager", "client services manager"],
+    "logistics": ["dispatch manager", "operations supervisor"],
+    "saas": ["customer success manager", "account executive"],
+    "software": ["customer success manager", "account executive"],
+    "trades": ["service manager", "dispatcher"],
+}
+
+
+def _normalize_query_tokens(query: str, max_terms: int = 8) -> list[str]:
+    tokens = re.findall(r"[a-z0-9\-\+]+", query.lower())
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token in _QUERY_STOPWORDS or len(token) <= 2:
+            continue
+        if token not in seen:
+            normalized.append(token)
+            seen.add(token)
+        if len(normalized) >= max_terms:
+            break
+    return normalized
+
+
+def _normalize_signal_query(query: str, max_terms: int = 8) -> str:
+    scoped = _scoped_query(query)
+    tokens = _normalize_query_tokens(scoped, max_terms=max_terms)
+    if not tokens:
+        return scoped
+    return " ".join(tokens)
+
+
+def _normalize_job_titles(query: str, limit: int = 5) -> list[str]:
+    lower = query.lower()
+    titles: list[str] = []
+    seen: set[str] = set()
+
+    def add(title: str) -> None:
+        if title not in seen:
+            seen.add(title)
+            titles.append(title)
+
+    # Preserve explicit role searches when the query already looks like one.
+    explicit_roles = [
+        "operations manager",
+        "office manager",
+        "sales manager",
+        "customer success manager",
+        "service manager",
+        "dispatcher",
+        "project manager",
+        "account manager",
+        "account executive",
+    ]
+    for role in explicit_roles:
+        if role in lower:
+            add(role)
+
+    for hint, mapped_titles in _JOB_TITLE_HINTS.items():
+        if hint in lower:
+            for title in mapped_titles:
+                add(title)
+
+    for title in _DEFAULT_JOB_TITLES:
+        add(title)
+
+    return titles[:limit]
+
+
+def _looks_placeholder(value: str) -> bool:
+    if not value:
+        return False
+    lower = value.strip().lower()
+    if lower in _PLACEHOLDER_PHRASES:
+        return True
+    if any(token in lower for token in _PLACEHOLDER_TOKENS):
+        return True
+    if "linkedin.com/in/johndoe" in lower or "linkedin.com/in/janesmith" in lower:
+        return True
+    if lower in {"example.com", "test.com", "sample.com", "localhost"}:
+        return True
+    return False
+
+
+def _validate_public_lead(payload: dict[str, Any]) -> str | None:
+    name = str(payload.get("name", "")).strip()
+    company = str(payload.get("company", "")).strip()
+    title = str(payload.get("title", "")).strip()
+    domain = str(payload.get("company_domain", "")).strip()
+    source_url = str(payload.get("source_url", "")).strip()
+    source_type = str(payload.get("source_type", "")).strip()
+    public_profile_url = str(payload.get("public_profile_url", "")).strip()
+    signals = payload.get("signals", [])
+
+    if not name or not company or not title:
+        return "Lead must include a real name, title, and company."
+    if any(_looks_placeholder(value) for value in [name, company, title, domain, source_url, public_profile_url]):
+        return "Lead appears to contain placeholder or invented identity data."
+    if not isinstance(signals, list) or not any(str(signal).strip() for signal in signals):
+        return "Lead must include at least one concrete public signal."
+    if not any([domain, source_url, public_profile_url]):
+        return "Lead must include a verifiable company domain, public profile URL, or source URL."
+    if source_url and _looks_placeholder(source_url):
+        return "Lead source URL is not verifiable."
+    if source_type and _looks_placeholder(source_type):
+        return "Lead source type is not verifiable."
+    return None
+
+
+def _validate_outreach_identity(name: str, company: str, signal: str) -> str | None:
+    if _looks_placeholder(name) or _looks_placeholder(company):
+        return "Outreach requires a verified real person and company."
+    if not signal.strip() or _looks_placeholder(signal):
+        return "Outreach requires a concrete, non-placeholder signal."
+    return None
+
+
 def get_tool_schema_xml() -> str:
     """Return a compact Hermes <tools> block with JSON schemas for every tool.
 
@@ -531,7 +697,7 @@ def _slice_results(results: Any, limit: int) -> list[Any]:
 def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[str, Any]:
     if get_all_signals is None:
         return {"ok": False, "error": "get_all_signals is not available"}
-    scoped = _scoped_query(query)
+    scoped = _normalize_signal_query(query)
     results = get_all_signals(keywords=[scoped], daysback=days_back)
     sliced = _slice_results(results, limit)
     return {"ok": True, "query": scoped, "count": len(sliced), "results": sliced}
@@ -542,14 +708,14 @@ def _search_reddit_signals(query: str, subreddit: str = "", limit: int = 10) -> 
         return {"ok": False, "error": "search_reddit is not available"}
     # search_reddit takes keywords: list[str], subreddits: list[str] | None
     subreddits = [subreddit] if subreddit else None
-    results = search_reddit(keywords=[_scoped_query(query)], subreddits=subreddits, max_results=limit)
+    results = search_reddit(keywords=[_normalize_signal_query(query)], subreddits=subreddits, max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_news_signals(query: str, days_back: int = 30, limit: int = 10) -> dict[str, Any]:
     if search_google_news is None:
         return {"ok": False, "error": "search_google_news is not available"}
-    results = search_google_news(keywords=[_scoped_query(query)], daysback=days_back, max_results=limit)
+    results = search_google_news(keywords=[_normalize_signal_query(query)], daysback=days_back, max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -557,7 +723,7 @@ def _search_github_signals(query: str, limit: int = 10) -> dict[str, Any]:
     if search_github_repos is None:
         return {"ok": False, "error": "search_github_repos is not available"}
     # search_github_repos takes keywords: list[str]
-    results = search_github_repos(keywords=[_scoped_query(query)], max_results=limit)
+    results = search_github_repos(keywords=[_normalize_signal_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -565,7 +731,7 @@ def _search_hn_signals(query: str, limit: int = 10) -> dict[str, Any]:
     if search_hackernews is None:
         return {"ok": False, "error": "search_hackernews is not available"}
     # search_hackernews takes keywords: list[str]
-    results = search_hackernews(keywords=[_scoped_query(query)], max_results=limit)
+    results = search_hackernews(keywords=[_normalize_signal_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -573,7 +739,7 @@ def _search_producthunt_signals(query: str, limit: int = 10) -> dict[str, Any]:
     if search_producthunt_launches is None:
         return {"ok": False, "error": "search_producthunt_launches is not available"}
     # search_producthunt_launches takes keywords: list[str]
-    results = search_producthunt_launches(keywords=[_scoped_query(query)], max_results=limit)
+    results = search_producthunt_launches(keywords=[_normalize_signal_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -581,7 +747,7 @@ def _search_remote_hiring_signals(query: str, limit: int = 10) -> dict[str, Any]
     if search_remoteok_jobs is None:
         return {"ok": False, "error": "search_remoteok_jobs is not available"}
     # search_remoteok_jobs takes keywords: list[str]
-    results = search_remoteok_jobs(keywords=[_scoped_query(query)], max_results=limit)
+    results = search_remoteok_jobs(keywords=[_normalize_signal_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -589,7 +755,7 @@ def _search_funding_signals(query: str = "", days_back: int = 90, limit: int = 1
     if search_funding_rounds is None:
         return {"ok": False, "error": "search_funding_rounds is not available"}
     # search_funding_rounds takes keywords: list[str] | None
-    keywords = [_scoped_query(query)] if query else None
+    keywords = [_normalize_signal_query(query)] if query else None
     results = search_funding_rounds(keywords=keywords, days_back=days_back)
     return {"ok": True, "results": _slice_results(results, limit)}
 
@@ -605,13 +771,19 @@ def _search_jobs_public(query: str, location: str = "", days_back: int = 30, lim
     if search_jobs is None:
         return {"ok": False, "error": "search_jobs is not available"}
     # search_jobs takes job_titles: list[str], hours_old: int (not days_back)
+    job_titles = _normalize_job_titles(query)
     results = search_jobs(
-        job_titles=[_scoped_query(query)],
+        job_titles=job_titles,
         location=location or config.TARGET_METRO,
         hours_old=days_back * 24,
         results_wanted=limit,
     )
-    return {"ok": True, "results": _slice_results(results, limit)}
+    return {
+        "ok": True,
+        "query": query,
+        "normalized_job_titles": job_titles,
+        "results": _slice_results(results, limit),
+    }
 
 
 def _search_jobs_by_icp_tool(
@@ -623,13 +795,24 @@ def _search_jobs_by_icp_tool(
     if search_jobs is None:
         return {"ok": False, "error": "search_jobs is not available"}
     # search_jobs takes job_titles: list[str], hours_old: int
+    job_titles: list[str] = []
+    seen: set[str] = set()
+    for keyword in icp_keywords:
+        for title in _normalize_job_titles(keyword):
+            if title not in seen:
+                seen.add(title)
+                job_titles.append(title)
     results = search_jobs(
-        job_titles=[_scoped_query(keyword) for keyword in icp_keywords],
+        job_titles=job_titles or _DEFAULT_JOB_TITLES,
         location=location or config.TARGET_METRO,
         hours_old=days_back * 24,
         results_wanted=limit,
     )
-    return {"ok": True, "results": _slice_results(results, limit)}
+    return {
+        "ok": True,
+        "normalized_job_titles": job_titles or _DEFAULT_JOB_TITLES,
+        "results": _slice_results(results, limit),
+    }
 
 
 def _enrich_lead_public(
@@ -702,21 +885,21 @@ def _verify_mx_public(domain: str) -> dict[str, Any]:
 def _search_public_profiles(query: str, limit: int = 20) -> dict[str, Any]:
     if get_all_public_profiles is None:
         return {"ok": False, "error": "get_all_public_profiles is not available"}
-    results = get_all_public_profiles(keywords=[_scoped_query(query)], max_results=limit)
+    results = get_all_public_profiles(keywords=[_normalize_signal_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_wellfound_jobs(query: str, limit: int = 20) -> dict[str, Any]:
     if search_wellfound_jobs is None:
         return {"ok": False, "error": "search_wellfound_jobs is not available"}
-    results = search_wellfound_jobs(keywords=[_scoped_query(query)], max_results=limit)
+    results = search_wellfound_jobs(keywords=[_normalize_signal_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_crunchbase_news(query: str, limit: int = 20) -> dict[str, Any]:
     if search_crunchbase_news is None:
         return {"ok": False, "error": "search_crunchbase_news is not available"}
-    results = search_crunchbase_news(keywords=[_scoped_query(query)], max_results=limit)
+    results = search_crunchbase_news(keywords=[_normalize_signal_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -730,21 +913,21 @@ def _scrape_team_page(company_name: str, domain: str, limit: int = 10) -> dict[s
 def _search_conference_speakers(query: str, limit: int = 20) -> dict[str, Any]:
     if search_conference_speakers is None:
         return {"ok": False, "error": "search_conference_speakers is not available"}
-    results = search_conference_speakers(keywords=[_scoped_query(query)], max_results=limit)
+    results = search_conference_speakers(keywords=[_normalize_signal_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_orcid_profiles(query: str, limit: int = 15) -> dict[str, Any]:
     if search_orcid_profiles is None:
         return {"ok": False, "error": "search_orcid_profiles is not available"}
-    results = search_orcid_profiles(keywords=[_scoped_query(query)], max_results=limit)
+    results = search_orcid_profiles(keywords=[_normalize_signal_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_glassdoor_signals(query: str, limit: int = 15) -> dict[str, Any]:
     if search_glassdoor_news is None:
         return {"ok": False, "error": "search_glassdoor_news is not available"}
-    results = search_glassdoor_news(keywords=[_scoped_query(query)], max_results=limit)
+    results = search_glassdoor_news(keywords=[_normalize_signal_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -836,6 +1019,9 @@ def _score_lead(
 
 def _save_lead(**payload: Any) -> dict[str, Any]:
     cleaned = _filter_public_fields(payload)
+    validation_error = _validate_public_lead(cleaned)
+    if validation_error:
+        return {"ok": False, "saved": False, "error": validation_error, "lead": cleaned}
     if "observed_at" not in cleaned:
         cleaned["observed_at"] = datetime.now(timezone.utc).isoformat()
     persistence = save_public_lead(cleaned)
@@ -855,6 +1041,9 @@ def _draft_outreach(
     signal: str = "",
     tone: str = "professional",
 ) -> dict[str, Any]:
+    validation_error = _validate_outreach_identity(name, company, signal)
+    if validation_error:
+        return {"ok": False, "error": validation_error}
     opener = f"Hi {name}, noticed {company} is showing momentum around {signal}."
     if tone == "direct":
         body = f"{opener} Reaching out because teams led by {title}s often need a faster way to turn signals into pipeline."

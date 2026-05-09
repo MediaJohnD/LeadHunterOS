@@ -25,6 +25,11 @@ score every candidate, save only leads with icp_score >= {config.ICP_MIN_SCORE},
 Emit at most 3 tool calls per turn so local context stays small.
 Country scope is mandatory: only return leads whose operating country or country of origin matches
 {config.TARGET_COUNTRY}. If a candidate appears outside that scope or the country is unclear, exclude it.
+Never invent people, companies, domains, URLs, job titles, or signals.
+A lead is verified only if it has a real company or person plus at least one concrete public signal and
+at least one verifiable source such as a source URL, public profile URL, or company domain.
+Do not call save_lead or draft_outreach for placeholder, hypothetical, or weakly supported candidates.
+Draft outreach only for verified leads that were already scored and saved.
 
 Use tools with exact Hermes XML:
 
