@@ -106,6 +106,24 @@ MIN_SIGNAL_COUNT: int = _int("MIN_SIGNAL_COUNT", 1)
 WEIGHT_ATTRACTION_PCT: int = _int("WEIGHT_ATTRACTION_PCT", 40)
 WEIGHT_ZERO_DEFECT_PCT: int = _int("WEIGHT_ZERO_DEFECT_PCT", 35)
 WEIGHT_EVIDENCE_PCT: int = _int("WEIGHT_EVIDENCE_PCT", 25)
+
+# Competitor-style ICP scoring weights (must sum to ~100; auto-normalized)
+WEIGHT_ICP_FIT_PCT: int = _int("WEIGHT_ICP_FIT_PCT", 35)
+WEIGHT_INTENT_STRENGTH_PCT: int = _int("WEIGHT_INTENT_STRENGTH_PCT", 35)
+WEIGHT_RECENCY_PCT: int = _int("WEIGHT_RECENCY_PCT", 15)
+WEIGHT_EVIDENCE_CONFIDENCE_PCT: int = _int("WEIGHT_EVIDENCE_CONFIDENCE_PCT", 15)
+
+# ICP target profile controls
+ICP_MIN_COMPANY_SIZE: int = _int("ICP_MIN_COMPANY_SIZE", 5)
+ICP_MAX_COMPANY_SIZE: int = _int("ICP_MAX_COMPANY_SIZE", 250)
+ICP_TARGET_TITLES: str = os.getenv(
+    "ICP_TARGET_TITLES",
+    "owner,founder,president,ceo,coo,operations manager,general manager,sales manager,customer success manager",
+)
+ICP_TARGET_INDUSTRIES: str = os.getenv(
+    "ICP_TARGET_INDUSTRIES",
+    "home services,legal,accounting,it services,logistics,healthcare support,agency,agencies,saas,software",
+)
 TARGET_METRO: str = os.getenv("TARGET_METRO", "Atlanta, GA")
 TARGET_REGION: str = os.getenv("TARGET_REGION", "Georgia")
 TARGET_COUNTRY: str = os.getenv("TARGET_COUNTRY", "United States")

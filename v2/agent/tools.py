@@ -535,6 +535,10 @@ PUBLIC_FIELD_ALLOWLIST = {
     "source_type",
     "observed_at",
     "icp_score",
+    "icp_fit_score",
+    "intent_strength_score",
+    "recency_score",
+    "evidence_confidence_score",
     "attraction_score",
     "zero_defect_score",
     "evidence_score",
@@ -631,6 +635,10 @@ _SOURCE_RELIABILITY = {
     "glassdoor": 7,
     "website": 10,
 }
+
+
+def _csv_tokens(value: str) -> list[str]:
+    return [item.strip().lower() for item in value.split(",") if item.strip()]
 
 
 def _normalize_query_tokens(query: str, max_terms: int = 8) -> list[str]:
@@ -778,20 +786,39 @@ def _score_components(
     industry_lower = industry.lower()
     signal_text = " ".join(signals).lower()
 
-    attraction = 25
-    if any(k in signal_text for k in ["hiring", "expansion", "funding", "launch", "new role", "growth"]):
-        attraction += 20
-    attraction += min(len(signals) * 4, 20)
-    if any(k in industry_lower for k in ["saas", "software", "it services", "logistics", "legal", "accounting"]):
-        attraction += 10
+    target_titles = _csv_tokens(config.ICP_TARGET_TITLES)
+    target_industries = _csv_tokens(config.ICP_TARGET_INDUSTRIES)
+    min_size = max(1, config.ICP_MIN_COMPANY_SIZE)
+    max_size = max(min_size, config.ICP_MAX_COMPANY_SIZE)
 
-    zero_defect = 20
-    if any(k in title_lower for k in ["operations", "owner", "founder", "director", "manager", "chief"]):
-        zero_defect += 20
-    if any(k in signal_text for k in ["hiring", "service", "workflow", "response", "scheduling", "crm"]):
-        zero_defect += 15
-    if company_size and 5 <= company_size <= 250:
-        zero_defect += 10
+    icp_fit = 15
+    if any(token in title_lower for token in target_titles):
+        icp_fit += 30
+    if any(token in industry_lower for token in target_industries):
+        icp_fit += 25
+    if company_size and min_size <= company_size <= max_size:
+        icp_fit += 20
+    elif company_size and company_size > max_size * 3:
+        icp_fit -= 15
+
+    intent_strength = 20
+    if any(k in signal_text for k in ["hiring", "expansion", "funding", "launch", "new role", "growth"]):
+        intent_strength += 25
+    if any(k in signal_text for k in ["migrating", "switching", "rfp", "looking for", "vendor", "buying"]):
+        intent_strength += 20
+    intent_strength += min(len(signals) * 4, 20)
+
+    recency = 35
+    # If timestamp fields are absent, assign neutral recency instead of optimistic.
+    observed = ""
+    if isinstance(signals, list):
+        for signal in signals:
+            text = str(signal)
+            if "2026-" in text or "2025-" in text:
+                observed = text
+                break
+    if observed:
+        recency = 70
 
     evidence = 20
     if source_url:
@@ -806,23 +833,30 @@ def _score_components(
     evidence += _country_scope_bonus({"work_location": work_location})
 
     return {
-        "attraction_score": max(0, min(attraction, 100)),
-        "zero_defect_score": max(0, min(zero_defect, 100)),
+        "icp_fit_score": max(0, min(icp_fit, 100)),
+        "intent_strength_score": max(0, min(intent_strength, 100)),
+        "recency_score": max(0, min(recency, 100)),
+        "evidence_confidence_score": max(0, min(evidence, 100)),
+        # Backward-compatible aliases used by existing downstream logic.
+        "attraction_score": max(0, min(intent_strength, 100)),
+        "zero_defect_score": max(0, min(icp_fit, 100)),
         "evidence_score": max(0, min(evidence, 100)),
     }
 
 
 def _composite_icp_score(components: dict[str, int]) -> int:
-    wa = max(0, config.WEIGHT_ATTRACTION_PCT)
-    wz = max(0, config.WEIGHT_ZERO_DEFECT_PCT)
-    we = max(0, config.WEIGHT_EVIDENCE_PCT)
-    denom = wa + wz + we
+    wf = max(0, config.WEIGHT_ICP_FIT_PCT)
+    wi = max(0, config.WEIGHT_INTENT_STRENGTH_PCT)
+    wr = max(0, config.WEIGHT_RECENCY_PCT)
+    we = max(0, config.WEIGHT_EVIDENCE_CONFIDENCE_PCT)
+    denom = wf + wi + wr + we
     if denom <= 0:
-        wa, wz, we, denom = 40, 35, 25, 100
+        wf, wi, wr, we, denom = 35, 35, 15, 15, 100
     score = (
-        components["attraction_score"] * wa
-        + components["zero_defect_score"] * wz
-        + components["evidence_score"] * we
+        components["icp_fit_score"] * wf
+        + components["intent_strength_score"] * wi
+        + components["recency_score"] * wr
+        + components["evidence_confidence_score"] * we
     ) / denom
     return int(max(0, min(round(score), 100)))
 
@@ -1224,6 +1258,10 @@ def _score_lead(
         "name": name,
         "company": company,
         "score": score,
+        "icp_fit_score": components["icp_fit_score"],
+        "intent_strength_score": components["intent_strength_score"],
+        "recency_score": components["recency_score"],
+        "evidence_confidence_score": components["evidence_confidence_score"],
         "attraction_score": components["attraction_score"],
         "zero_defect_score": components["zero_defect_score"],
         "evidence_score": components["evidence_score"],
@@ -1368,6 +1406,10 @@ def _save_lead(**payload: Any) -> dict[str, Any]:
     cleaned["attraction_score"] = components["attraction_score"]
     cleaned["zero_defect_score"] = components["zero_defect_score"]
     cleaned["evidence_score"] = components["evidence_score"]
+    cleaned["icp_fit_score"] = components["icp_fit_score"]
+    cleaned["intent_strength_score"] = components["intent_strength_score"]
+    cleaned["recency_score"] = components["recency_score"]
+    cleaned["evidence_confidence_score"] = components["evidence_confidence_score"]
     cleaned["icp_score"] = int(cleaned.get("icp_score", computed_icp) or computed_icp)
     if cleaned["icp_score"] < config.ICP_MIN_SCORE:
         return {"ok": False, "saved": False, "error": f"Lead score below ICP threshold ({config.ICP_MIN_SCORE}).", "lead": cleaned}
