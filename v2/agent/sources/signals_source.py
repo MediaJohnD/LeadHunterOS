@@ -15,7 +15,7 @@ All endpoints are US-hosted public APIs. No signup needed.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote_plus
 import xml.etree.ElementTree as ET
@@ -27,23 +27,22 @@ HEADERS = {
     "User-Agent": "LeadHunterOS research@leadhunteros.local",
     "Accept": "application/json",
 }
-
 _SESSION = requests.Session()
 _SESSION.headers.update(HEADERS)
 
 
 # ---------------------------------------------------------------------------
-# Hacker News  (Algolia HN Search API)
+# Hacker News (Algolia API)
 # ---------------------------------------------------------------------------
 
 def search_hackernews(
     keywords: list[str],
-    days_back: int = 30,
+    daysback: int = 30,
     max_results: int = 30,
 ) -> list[dict]:
     """Search HN posts/comments for buying signals."""
     results: list[dict] = []
-    cutoff = int((datetime.utcnow() - timedelta(days=days_back)).timestamp())
+    cutoff = int((datetime.now(timezone.utc) - timedelta(days=daysback)).timestamp())
     for kw in keywords:
         try:
             url = (
@@ -72,7 +71,10 @@ def search_hackernews(
     return results[:max_results]
 
 
-def search_hn_who_is_hiring(keywords: list[str], max_results: int = 20) -> list[dict]:
+def search_hn_whoishiring(
+    keywords: list[str],
+    max_results: int = 20,
+) -> list[dict]:
     """Search the monthly 'Who is Hiring' HN thread for tech stack signals."""
     results: list[dict] = []
     try:
@@ -106,27 +108,26 @@ def search_hn_who_is_hiring(keywords: list[str], max_results: int = 20) -> list[
                         "comments": 0,
                         "published_at": c.get("created_at", ""),
                     })
-        time.sleep(0.3)
+            time.sleep(0.3)
     except Exception as exc:
         logger.warning(f"HN hiring search error: {exc}")
     return results[:max_results]
 
 
 # ---------------------------------------------------------------------------
-# Reddit  (public JSON API  -  no auth needed)
+# Reddit (public JSON API)
 # ---------------------------------------------------------------------------
 
 REDDIT_SUBREDDITS = [
-    "entrepreneur", "startups", "sales", "marketing",
-    "saas", "smallbusiness", "forhire", "hiring",
-    "leadgeneration", "digital_marketing",
+    "entrepreneur", "startups", "sales", "marketing", "saas",
+    "smallbusiness", "forhire", "hiring", "leadgeneration", "digitalmarketing",
 ]
 
 
 def search_reddit(
     keywords: list[str],
     subreddits: list[str] | None = None,
-    days_back: int = 14,
+    daysback: int = 14,
     max_results: int = 30,
 ) -> list[dict]:
     """Search Reddit for buying signals via the public JSON search API."""
@@ -143,11 +144,11 @@ def search_reddit(
                 if resp.status_code != 200:
                     continue
                 posts = resp.json().get("data", {}).get("children", [])
-                cutoff = datetime.utcnow() - timedelta(days=days_back)
+                cutoff = datetime.now(timezone.utc) - timedelta(days=daysback)
                 for post in posts:
                     d = post.get("data", {})
                     created = datetime.utcfromtimestamp(d.get("created_utc", 0))
-                    if created < cutoff:
+                    if created < cutoff.replace(tzinfo=None):
                         continue
                     results.append({
                         "source": "reddit",
@@ -168,12 +169,12 @@ def search_reddit(
 
 
 # ---------------------------------------------------------------------------
-# Google News  (RSS  -  no API key)
+# Google News (RSS)
 # ---------------------------------------------------------------------------
 
 def search_google_news(
     keywords: list[str],
-    days_back: int = 7,
+    daysback: int = 7,
     max_results: int = 30,
 ) -> list[dict]:
     """Fetch Google News RSS feed items for keyword-based buying signals."""
@@ -187,14 +188,16 @@ def search_google_news(
             root = ET.fromstring(resp.text)
             ns = {}
             items = root.findall(".//item")
-            cutoff = datetime.utcnow() - timedelta(days=days_back)
+            cutoff = datetime.now(timezone.utc) - timedelta(days=daysback)
             for item in items:
                 pub_text = item.findtext("pubDate", "")
                 try:
                     from email.utils import parsedate_to_datetime
-                    pub_dt = parsedate_to_datetime(pub_text).replace(tzinfo=None)
+                    pub_dt = parsedate_to_datetime(pub_text)
+                    if pub_dt.tzinfo is None:
+                        pub_dt = pub_dt.replace(tzinfo=timezone.utc)
                 except Exception:
-                    pub_dt = datetime.utcnow()
+                    pub_dt = datetime.now(timezone.utc)
                 if pub_dt < cutoff:
                     continue
                 results.append({
@@ -215,7 +218,7 @@ def search_google_news(
 
 
 # ---------------------------------------------------------------------------
-# GitHub  (unauthenticated REST API  -  60 req/hr)
+# GitHub (REST API)
 # ---------------------------------------------------------------------------
 
 def search_github_repos(
@@ -257,7 +260,7 @@ def search_github_repos(
 
 
 # ---------------------------------------------------------------------------
-# ProductHunt  (RSS  -  public)
+# ProductHunt (RSS)
 # ---------------------------------------------------------------------------
 
 def search_producthunt_launches(
@@ -296,7 +299,7 @@ def search_producthunt_launches(
 
 
 # ---------------------------------------------------------------------------
-# RemoteOK  (public JSON  -  no signup)
+# RemoteOK (JSON API)
 # ---------------------------------------------------------------------------
 
 def search_remoteok_jobs(
@@ -318,7 +321,7 @@ def search_remoteok_jobs(
             text = " ".join([
                 job.get("position", ""),
                 job.get("company", ""),
-                " ".join(job.get("tags", [])),
+                ", ".join(job.get("tags", [])),
                 job.get("description", ""),
             ]).lower()
             matched = [kw for kw in keywords if kw.lower() in text]
@@ -344,41 +347,34 @@ def search_remoteok_jobs(
 
 
 # ---------------------------------------------------------------------------
-# Aggregate: get_all_signals
+# Aggregate
 # ---------------------------------------------------------------------------
 
 def get_all_signals(
     keywords: list[str],
-    days_back: int = 14,
+    daysback: int = 14,
     include_sources: list[str] | None = None,
 ) -> list[dict]:
     """Aggregate buying signals from all zero-signup sources."""
-    sources = include_sources or [
-        "hackernews", "reddit", "google_news", "github", "producthunt", "remoteok"
-    ]
+    sources = include_sources or ["hackernews", "reddit", "googlenews", "github", "producthunt", "remoteok"]
     all_results: list[dict] = []
 
     if "hackernews" in sources:
         logger.info("Fetching HN signals...")
-        all_results.extend(search_hackernews(keywords, days_back=days_back))
-        all_results.extend(search_hn_who_is_hiring(keywords))
-
+        all_results.extend(search_hackernews(keywords, daysback=daysback))
+        all_results.extend(search_hn_whoishiring(keywords))
     if "reddit" in sources:
         logger.info("Fetching Reddit signals...")
-        all_results.extend(search_reddit(keywords, days_back=days_back))
-
-    if "google_news" in sources:
+        all_results.extend(search_reddit(keywords, daysback=daysback))
+    if "googlenews" in sources:
         logger.info("Fetching Google News signals...")
-        all_results.extend(search_google_news(keywords, days_back=days_back))
-
+        all_results.extend(search_google_news(keywords, daysback=daysback))
     if "github" in sources:
         logger.info("Fetching GitHub signals...")
         all_results.extend(search_github_repos(keywords))
-
     if "producthunt" in sources:
         logger.info("Fetching ProductHunt signals...")
         all_results.extend(search_producthunt_launches(keywords))
-
     if "remoteok" in sources:
         logger.info("Fetching RemoteOK job signals...")
         all_results.extend(search_remoteok_jobs(keywords))
