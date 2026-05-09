@@ -34,6 +34,18 @@ def _float(key: str, default: float) -> float:
         return default
 
 
+def _bool(key: str, default: bool) -> bool:
+    """Safe bool parser for env flags."""
+    val = os.getenv(key, "").strip().lower()
+    if not val:
+        return default
+    if val in {"1", "true", "yes", "on"}:
+        return True
+    if val in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 # -- LLM BACKEND SELECTION --------------------------------------------------
 # Options: 'local', 'claude', 'openai', 'perplexity'
 DEFAULT_LLM_BACKEND: str = os.getenv("DEFAULT_LLM_BACKEND", "local")
@@ -72,6 +84,8 @@ PERPLEXITY_MODEL: str = os.getenv("PERPLEXITY_MODEL", "sonar")
 # Uses safe parsers - will not crash if .env has stray values like 'auto'
 TEMPERATURE: float = _float("TEMPERATURE", 0.7)
 MAX_TOKENS: int = _int("MAX_TOKENS", 4096)
+LOCAL_LLM_TIMEOUT_SECONDS: int = _int("LOCAL_LLM_TIMEOUT_SECONDS", 300)
+ENABLE_CLOUD_FALLBACKS: bool = _bool("ENABLE_CLOUD_FALLBACKS", False)
 
 # -- AGENT SETTINGS -----------------------------------------------------------
 AGENT_LOOP_INTERVAL_MINUTES: int = _int("AGENT_LOOP_INTERVAL_MINUTES", 60)

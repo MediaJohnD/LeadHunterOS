@@ -42,6 +42,8 @@ class LLMRouter:
         # Always try Lemonade first
         if self._check_lemonade():
             self.available_backends.append("local")
+        if not config.ENABLE_CLOUD_FALLBACKS:
+            return
         if self._has_real_key(config.ANTHROPIC_API_KEY, "sk-ant-your-key-here"):
             self.available_backends.append("claude")
         if self._has_real_key(config.OPENAI_API_KEY, "sk-your-key-here"):
@@ -156,7 +158,7 @@ class LLMRouter:
             f"{config.LEMONADE_BASE_URL}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {config.LEMONADE_API_KEY}"},
-            timeout=180,
+            timeout=max(60, config.LOCAL_LLM_TIMEOUT_SECONDS),
         )
         r.raise_for_status()
         data = r.json()
