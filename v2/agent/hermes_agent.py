@@ -88,13 +88,13 @@ class HermesAgent:
                 f"{response['backend']}/{response['model']} ({len(content)} chars)"
             )
 
-            messages.append({"role": "assistant", "content": content})
-
             if "FINAL ANSWER:" in content:
+                messages.append({"role": "assistant", "content": content})
                 logger.success(f"[{self.session_id}] Agent reached final answer")
                 break
 
             tool_calls, parse_errors = self._parse_tool_calls(content)
+            messages.append({"role": "assistant", "content": self._assistant_history_entry(content, tool_calls)})
             if not tool_calls and not parse_errors:
                 logger.warning(f"[{self.session_id}] No tool call or final answer. Nudging.")
                 messages.append({
@@ -180,6 +180,22 @@ class HermesAgent:
 
         return calls, errors
 
+    def _assistant_history_entry(self, content: str, tool_calls: list[dict[str, Any]]) -> str:
+        """Keep only the tool-call portion of assistant turns to preserve local context."""
+        if not tool_calls:
+            return content[:600] + ("...[truncated]" if len(content) > 600 else "")
+
+        tool_blocks: list[str] = []
+        for call in tool_calls[:3]:
+            tool_blocks.append(
+                "<tool_call>"
+                + json.dumps(call, separators=(",", ":"), default=str)
+                + "</tool_call>"
+            )
+        if len(tool_calls) > 3:
+            tool_blocks.append("<tool_call>{\"note\":\"additional tool calls truncated\"}</tool_call>")
+        return "\n".join(tool_blocks)
+
     def _compact_tool_result(self, value: Any, depth: int = 0) -> Any:
         """Keep tool observations useful but small enough for local 4096-token models."""
         if depth > 4:
@@ -201,7 +217,7 @@ class HermesAgent:
             return compact_dict
         return value
 
-    def _fit_tool_responses(self, responses: list[str], max_chars: int = 9000) -> str:
+    def _fit_tool_responses(self, responses: list[str], max_chars: int = 7000) -> str:
         combined = "\n".join(responses)
         if len(combined) <= max_chars:
             return combined
