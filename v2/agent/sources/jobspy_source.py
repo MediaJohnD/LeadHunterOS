@@ -13,6 +13,8 @@ from typing import Any
 
 from loguru import logger
 
+import config
+
 # Buying signal keywords that indicate active media/ad spend
 MEDIA_KEYWORDS = [
     "media planner", "media buyer", "programmatic", "paid media",
@@ -41,11 +43,14 @@ def search_jobs(
 
     leads = []
     search_term = " OR ".join(f'"{t}"' for t in job_titles[:5])
+    site_names = [site.strip() for site in config.JOBSPY_SITES.split(",") if site.strip()]
+    if not site_names:
+        site_names = ["linkedin", "indeed", "google"]
 
     try:
-        logger.info(f"JobSpy searching: {search_term} in {location}")
+        logger.info(f"JobSpy searching: {search_term} in {location} via {site_names}")
         jobs = scrape_jobs(
-            site_name=["linkedin", "indeed", "google", "zip_recruiter"],
+            site_name=site_names,
             search_term=search_term,
             location=location,
             results_wanted=results_wanted,

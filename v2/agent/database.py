@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+import csv
 from datetime import datetime, timezone
 from typing import Any
 
@@ -154,3 +155,36 @@ def _insert_lead_row(engine: Engine, row: dict[str, Any]) -> None:
               :notes, :created_at, :updated_at
             )
         """), row)
+
+
+def export_latest_leads_csv(path: str, limit: int = 200) -> dict[str, Any]:
+    """Export recent leads to CSV for operator review and downstream workflows."""
+    engine = _engine()
+    ensure_schema()
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, full_name, title, company_name, company_domain, industry,
+                       employee_count, company_location, icp_score, status,
+                       signal_type, signal_source, signal_summary, created_at
+                FROM leads
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": max(1, int(limit))},
+        ).mappings().all()
+
+    headers = [
+        "id", "full_name", "title", "company_name", "company_domain", "industry",
+        "employee_count", "company_location", "icp_score", "status",
+        "signal_type", "signal_source", "signal_summary", "created_at",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({h: row.get(h, "") for h in headers})
+
+    return {"ok": True, "path": path, "rows": len(rows)}

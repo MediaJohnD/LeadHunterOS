@@ -98,6 +98,8 @@ LEAD_SEARCH_QUERY: str = os.getenv(
 )
 LEAD_MAX_RESULTS: int = _int("LEAD_MAX_RESULTS", 50)
 LEAD_OUTPUT_FORMAT: str = os.getenv("LEAD_OUTPUT_FORMAT", "json")
+EXPORT_LEADS_TO_CSV: bool = _bool("EXPORT_LEADS_TO_CSV", True)
+LEADS_CSV_PATH: str = os.getenv("LEADS_CSV_PATH", "./leads_latest.csv")
 ICP_MIN_SCORE: int = _int("ICP_MIN_SCORE", 70)
 MIN_EVIDENCE_SCORE: int = _int("MIN_EVIDENCE_SCORE", 45)
 MIN_SIGNAL_COUNT: int = _int("MIN_SIGNAL_COUNT", 1)
@@ -137,3 +139,7 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./leadhunter.db")
 APOLLO_API_KEY: str = os.getenv("APOLLO_API_KEY", "")
 HUNTER_API_KEY: str = os.getenv("HUNTER_API_KEY", "")
 NEWSAPI_KEY: str = os.getenv("NEWSAPI_KEY", "")
+
+# -- JOBSPY SETTINGS ----------------------------------------------------------
+# Default excludes zip_recruiter because it frequently returns 403.
+JOBSPY_SITES: str = os.getenv("JOBSPY_SITES", "linkedin,indeed,google")

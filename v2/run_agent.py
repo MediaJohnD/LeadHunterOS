@@ -17,6 +17,7 @@ from loguru import logger
 
 import config
 from agent.hermes_agent import HermesAgent
+from agent.database import export_latest_leads_csv
 
 
 DEFAULT_OBJECTIVE = (
@@ -40,6 +41,9 @@ def run_once(objective: str, llm_backend: str | None = None) -> None:
         agent = HermesAgent(preferred_backend=llm_backend)
         result = agent.run(objective)
         logger.success(f"Agent cycle complete. Result preview: {str(result)[:300]}")
+        if config.EXPORT_LEADS_TO_CSV:
+            export = export_latest_leads_csv(config.LEADS_CSV_PATH, limit=config.LEAD_MAX_RESULTS)
+            logger.info(f"CSV export complete: {export['path']} ({export['rows']} rows)")
     except Exception as e:
         logger.error(f"Agent cycle failed: {e}")
         raise
