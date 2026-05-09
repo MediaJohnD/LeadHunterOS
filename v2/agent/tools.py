@@ -427,6 +427,38 @@ TOOLS: list[dict[str, Any]] = [
         }
     },
     {
+        "name": "rank_leads",
+        "description": "Deduplicate and rank lead candidates using evidence-weighted ICP scoring.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "leads": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Lead candidates to deduplicate and rank."
+                },
+                "top_n": {"type": "integer", "description": "Number of leads to return. Default 10."}
+            },
+            "required": ["leads"]
+        }
+    },
+    {
+        "name": "recommend_playbook_actions",
+        "description": "Generate next-step GTM playbook actions from scored leads and recent outcomes.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "leads": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Scored leads to derive actions from."
+                },
+                "objective": {"type": "string", "description": "Current campaign objective."}
+            },
+            "required": ["leads", "objective"]
+        }
+    },
+    {
         "name": "save_lead",
         "description": "Save a lead with public, business-relevant allow-listed fields only.",
         "parameters": {
@@ -486,6 +518,9 @@ PUBLIC_FIELD_ALLOWLIST = {
     "source_type",
     "observed_at",
     "icp_score",
+    "attraction_score",
+    "zero_defect_score",
+    "evidence_score",
     "personalized_opener",
 }
 
@@ -672,6 +707,91 @@ def _validate_outreach_identity(name: str, company: str, signal: str) -> str | N
     if not signal.strip() or _looks_placeholder(signal):
         return "Outreach requires a concrete, non-placeholder signal."
     return None
+
+
+def _country_scope_bonus(payload: dict[str, Any]) -> int:
+    location = str(payload.get("work_location", "")).lower()
+    country = config.TARGET_COUNTRY.lower()
+    region = config.TARGET_REGION.lower()
+    metro = config.TARGET_METRO.lower()
+    if metro and metro in location:
+        return 10
+    if region and region in location:
+        return 8
+    if country and country in location:
+        return 5
+    if not location:
+        return 0
+    return -8
+
+
+def _score_components(
+    *,
+    name: str,
+    title: str,
+    company: str,
+    company_size: int | None,
+    industry: str,
+    signals: list[str],
+    work_location: str = "",
+    source_url: str = "",
+    public_profile_url: str = "",
+    company_domain: str = "",
+) -> dict[str, int]:
+    del name, company
+    title_lower = title.lower()
+    industry_lower = industry.lower()
+    signal_text = " ".join(signals).lower()
+
+    attraction = 25
+    if any(k in signal_text for k in ["hiring", "expansion", "funding", "launch", "new role", "growth"]):
+        attraction += 20
+    attraction += min(len(signals) * 4, 20)
+    if any(k in industry_lower for k in ["saas", "software", "it services", "logistics", "legal", "accounting"]):
+        attraction += 10
+
+    zero_defect = 20
+    if any(k in title_lower for k in ["operations", "owner", "founder", "director", "manager", "chief"]):
+        zero_defect += 20
+    if any(k in signal_text for k in ["hiring", "service", "workflow", "response", "scheduling", "crm"]):
+        zero_defect += 15
+    if company_size and 5 <= company_size <= 250:
+        zero_defect += 10
+
+    evidence = 20
+    if source_url:
+        evidence += 20
+    if public_profile_url:
+        evidence += 10
+    if company_domain:
+        evidence += 10
+    if work_location:
+        evidence += 10
+    evidence += _country_scope_bonus({"work_location": work_location})
+
+    return {
+        "attraction_score": max(0, min(attraction, 100)),
+        "zero_defect_score": max(0, min(zero_defect, 100)),
+        "evidence_score": max(0, min(evidence, 100)),
+    }
+
+
+def _composite_icp_score(components: dict[str, int]) -> int:
+    score = (
+        components["attraction_score"] * 0.4
+        + components["zero_defect_score"] * 0.35
+        + components["evidence_score"] * 0.25
+    )
+    return int(max(0, min(round(score), 100)))
+
+
+def _lead_dedupe_key(lead: dict[str, Any]) -> str:
+    company = str(lead.get("company", "")).strip().lower()
+    domain = str(lead.get("company_domain", "")).strip().lower()
+    name = str(lead.get("name", "")).strip().lower()
+    if domain:
+        return f"{domain}|{name}"
+    return f"{company}|{name}"
 
 
 def get_tool_schema_xml() -> str:
@@ -991,22 +1111,23 @@ def _score_lead(
     signals: list[str] | None = None,
 ) -> dict[str, Any]:
     signals = signals or []
-    score = 40
-    if title:
-        seniority_terms = ["vp", "head", "director", "chief", "founder", "owner"]
-        if any(term in title.lower() for term in seniority_terms):
-            score += 20
-    if company_size and company_size >= 50:
-        score += 10
-    if industry:
-        score += 5
-    score += min(len(signals) * 5, 25)
-    score = max(0, min(score, 100))
+    components = _score_components(
+        name=name,
+        title=title,
+        company=company,
+        company_size=company_size,
+        industry=industry,
+        signals=signals,
+    )
+    score = _composite_icp_score(components)
     return {
         "ok": True,
         "name": name,
         "company": company,
         "score": score,
+        "attraction_score": components["attraction_score"],
+        "zero_defect_score": components["zero_defect_score"],
+        "evidence_score": components["evidence_score"],
         "reasoning": {
             "title": title,
             "industry": industry,
@@ -1014,6 +1135,73 @@ def _score_lead(
             "signals_count": len(signals),
             "signals": signals,
         },
+    }
+
+
+def _rank_leads(leads: list[dict[str, Any]], top_n: int = 10) -> dict[str, Any]:
+    deduped: dict[str, dict[str, Any]] = {}
+    dropped = 0
+    for lead in leads:
+        if not isinstance(lead, dict):
+            dropped += 1
+            continue
+        key = _lead_dedupe_key(lead)
+        components = _score_components(
+            name=str(lead.get("name", "")),
+            title=str(lead.get("title", "")),
+            company=str(lead.get("company", "")),
+            company_size=lead.get("company_size"),
+            industry=str(lead.get("industry", "")),
+            signals=lead.get("signals", []) if isinstance(lead.get("signals"), list) else [],
+            work_location=str(lead.get("work_location", "")),
+            source_url=str(lead.get("source_url", "")),
+            public_profile_url=str(lead.get("public_profile_url", "")),
+            company_domain=str(lead.get("company_domain", "")),
+        )
+        icp_score = _composite_icp_score(components)
+        candidate = dict(lead)
+        candidate.update(components)
+        candidate["icp_score"] = icp_score
+        prev = deduped.get(key)
+        if prev is None or candidate["icp_score"] > int(prev.get("icp_score", 0)):
+            deduped[key] = candidate
+
+    ranked = sorted(deduped.values(), key=lambda item: int(item.get("icp_score", 0)), reverse=True)
+    return {
+        "ok": True,
+        "input_count": len(leads),
+        "unique_count": len(ranked),
+        "dropped_count": dropped,
+        "results": ranked[: max(1, top_n)],
+    }
+
+
+def _recommend_playbook_actions(leads: list[dict[str, Any]], objective: str) -> dict[str, Any]:
+    ranked = _rank_leads(leads, top_n=5)
+    top_leads = ranked.get("results", [])
+    actions: list[dict[str, Any]] = []
+    for lead in top_leads:
+        actions.append(
+            {
+                "company": lead.get("company", ""),
+                "name": lead.get("name", ""),
+                "icp_score": lead.get("icp_score", 0),
+                "action": "enrich_then_outreach",
+                "reason": "High combined attraction, zero-defect, and evidence score.",
+            }
+        )
+    if not actions:
+        actions.append(
+            {
+                "action": "broaden_signals",
+                "reason": "Insufficient qualified leads. Expand signals to local news, jobs, and conference sources.",
+            }
+        )
+    return {
+        "ok": True,
+        "objective": objective,
+        "top_candidates": top_leads,
+        "actions": actions,
     }
 
 
@@ -1087,6 +1275,8 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         "enrich_apollo": _enrich_apollo,
         "find_email_hunter": _find_email_hunter,
         "score_lead": _score_lead,
+        "rank_leads": _rank_leads,
+        "recommend_playbook_actions": _recommend_playbook_actions,
         "save_lead": _save_lead,
         "draft_outreach": _draft_outreach,
     }

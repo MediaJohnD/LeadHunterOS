@@ -30,6 +30,8 @@ A lead is verified only if it has a real company or person plus at least one con
 at least one verifiable source such as a source URL, public profile URL, or company domain.
 Do not call save_lead or draft_outreach for placeholder, hypothetical, or weakly supported candidates.
 Draft outreach only for verified leads that were already scored and saved.
+Use rank_leads before final output so the top candidates are deduplicated and evidence-weighted.
+Use recommend_playbook_actions before final output to produce concrete next-step actions.
 
 Use tools with exact Hermes XML:
 
