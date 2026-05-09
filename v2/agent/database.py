@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 
 import config
 
@@ -16,6 +17,10 @@ import config
 def _engine() -> Engine:
     connect_args = {"check_same_thread": False} if config.DATABASE_URL.startswith("sqlite") else {}
     return create_engine(config.DATABASE_URL, future=True, connect_args=connect_args)
+
+
+def _sqlite_fallback_engine() -> Engine:
+    return create_engine("sqlite:///./leadhunter.db", future=True, connect_args={"check_same_thread": False})
 
 
 def _json(value: Any) -> str:
@@ -114,6 +119,26 @@ def save_public_lead(payload: dict[str, Any]) -> dict[str, Any]:
         "updated_at": now,
     }
 
+    fallback_used = False
+    try:
+        _insert_lead_row(engine, row)
+    except SQLAlchemyError:
+        if engine.dialect.name == "sqlite":
+            raise
+        fallback_used = True
+        fallback_engine = _sqlite_fallback_engine()
+        _ensure_sqlite_schema(fallback_engine)
+        _insert_lead_row(fallback_engine, row)
+
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "saved_at": now,
+        "database": "sqlite_fallback" if fallback_used else engine.dialect.name,
+    }
+
+
+def _insert_lead_row(engine: Engine, row: dict[str, Any]) -> None:
     with engine.begin() as conn:
         raw_expr = "CAST(:raw_signal_data AS JSONB)" if engine.dialect.name == "postgresql" else ":raw_signal_data"
         conn.execute(text(f"""
@@ -129,5 +154,3 @@ def save_public_lead(payload: dict[str, Any]) -> dict[str, Any]:
               :notes, :created_at, :updated_at
             )
         """), row)
-
-    return {"id": row["id"], "status": row["status"], "saved_at": now}

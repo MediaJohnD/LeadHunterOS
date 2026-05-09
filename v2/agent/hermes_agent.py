@@ -22,6 +22,7 @@ Goal: discover, score, save, and draft outreach for high-fit B2B leads using pub
 
 Workflow: public signals first, public enrichment second, paid fallbacks only if needed,
 score every candidate, save only leads with icp_score >= {config.ICP_MIN_SCORE}, then draft outreach.
+Emit at most 3 tool calls per turn so local context stays small.
 
 Use tools with exact Hermes XML:
 
@@ -133,14 +134,15 @@ class HermesAgent:
                         result = {"ok": False, "error": str(exc), "tool": tool_name}
                         logger.warning(f"[{self.session_id}] Tool {tool_name} error: {exc}")
 
+                compact_result = self._compact_tool_result(result)
                 tool_responses.append(
                     f"<tool_response>\n"
                     f"Tool: {tool_name}\n"
-                    f"Result: {json.dumps(result, indent=2, default=str)}\n"
+                    f"Result: {json.dumps(compact_result, separators=(',', ':'), default=str)}\n"
                     f"</tool_response>"
                 )
 
-            messages.append({"role": "user", "content": "\n".join(tool_responses)})
+            messages.append({"role": "user", "content": self._fit_tool_responses(tool_responses)})
 
         if iterations >= MAX_ITERATIONS:
             logger.warning(f"[{self.session_id}] Hit max iterations ({MAX_ITERATIONS})")
@@ -175,3 +177,38 @@ class HermesAgent:
                 logger.warning(f"Failed to parse tool_call JSON: {exc} | raw: {raw[:100]}")
 
         return calls, errors
+
+    def _compact_tool_result(self, value: Any, depth: int = 0) -> Any:
+        """Keep tool observations useful but small enough for local 4096-token models."""
+        if depth > 4:
+            return str(value)[:300]
+        if isinstance(value, str):
+            return value if len(value) <= 500 else value[:500] + "...[truncated]"
+        if isinstance(value, list):
+            compact = [self._compact_tool_result(item, depth + 1) for item in value[:3]]
+            if len(value) > 3:
+                compact.append({"truncated_count": len(value) - 3})
+            return compact
+        if isinstance(value, dict):
+            compact_dict: dict[str, Any] = {}
+            for key, item in value.items():
+                if key in {"raw_signal_data", "description", "html", "content"}:
+                    compact_dict[key] = str(item)[:300] + ("...[truncated]" if len(str(item)) > 300 else "")
+                else:
+                    compact_dict[key] = self._compact_tool_result(item, depth + 1)
+            return compact_dict
+        return value
+
+    def _fit_tool_responses(self, responses: list[str], max_chars: int = 9000) -> str:
+        combined = "\n".join(responses)
+        if len(combined) <= max_chars:
+            return combined
+        kept: list[str] = []
+        used = 0
+        for response in responses:
+            if used + len(response) > max_chars:
+                break
+            kept.append(response)
+            used += len(response)
+        kept.append("<tool_response>Result: observation batch truncated to fit local context.</tool_response>")
+        return "\n".join(kept)
