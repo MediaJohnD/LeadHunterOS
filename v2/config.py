@@ -78,10 +78,16 @@ AGENT_LOOP_INTERVAL_MINUTES: int = _int("AGENT_LOOP_INTERVAL_MINUTES", 60)
 AGENT_MAX_ITERATIONS: int = _int("AGENT_MAX_ITERATIONS", 15)
 
 # -- LEAD SEARCH SETTINGS -----------------------------------------------------
-LEAD_SEARCH_QUERY: str = os.getenv("LEAD_SEARCH_QUERY", "B2B SaaS companies Series A funding")
+LEAD_SEARCH_QUERY: str = os.getenv(
+    "LEAD_SEARCH_QUERY",
+    "Atlanta SMB companies in Georgia with hiring, expansion, or funding signals",
+)
 LEAD_MAX_RESULTS: int = _int("LEAD_MAX_RESULTS", 50)
 LEAD_OUTPUT_FORMAT: str = os.getenv("LEAD_OUTPUT_FORMAT", "json")
 ICP_MIN_SCORE: int = _int("ICP_MIN_SCORE", 70)
+TARGET_METRO: str = os.getenv("TARGET_METRO", "Atlanta, GA")
+TARGET_REGION: str = os.getenv("TARGET_REGION", "Georgia")
+TARGET_COUNTRY: str = os.getenv("TARGET_COUNTRY", "United States")
 
 # -- DATABASE SETTINGS --------------------------------------------------------
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./leadhunter.db")
