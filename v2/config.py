@@ -56,7 +56,8 @@ LEMONADE_MODEL: str = os.getenv("LEMONADE_MODEL", "auto")
 
 # -- CLOUD FALLBACK 1: CLAUDE (Anthropic - US) --------------------------------
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-opus-4-5")
+# Current Claude API IDs use dateless IDs for 4.6+ releases.
+CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-opus-4-7")
 
 # -- CLOUD FALLBACK 2: OPENAI (US) --------------------------------------------
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
@@ -74,6 +75,7 @@ MAX_TOKENS: int = _int("MAX_TOKENS", 4096)
 
 # -- AGENT SETTINGS -----------------------------------------------------------
 AGENT_LOOP_INTERVAL_MINUTES: int = _int("AGENT_LOOP_INTERVAL_MINUTES", 60)
+AGENT_MAX_ITERATIONS: int = _int("AGENT_MAX_ITERATIONS", 15)
 
 # -- LEAD SEARCH SETTINGS -----------------------------------------------------
 LEAD_SEARCH_QUERY: str = os.getenv("LEAD_SEARCH_QUERY", "B2B SaaS companies Series A funding")
@@ -83,3 +85,9 @@ ICP_MIN_SCORE: int = _int("ICP_MIN_SCORE", 70)
 
 # -- DATABASE SETTINGS --------------------------------------------------------
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./leadhunter.db")
+
+# -- OPTIONAL PAID API KEYS ---------------------------------------------------
+# Core public-signal tools work without these. Set only when using paid fallbacks.
+APOLLO_API_KEY: str = os.getenv("APOLLO_API_KEY", "")
+HUNTER_API_KEY: str = os.getenv("HUNTER_API_KEY", "")
+NEWSAPI_KEY: str = os.getenv("NEWSAPI_KEY", "")

@@ -8,7 +8,7 @@
 # openai client works for Lemonade local (AMD) AND OpenAI cloud
 # Lemonade is OpenAI-API compatible - same client, different base_url
 openai>=1.30.0
-anthropic>=0.25.0              # Claude Pro / Anthropic (US-based, heavy tasks)
+anthropic>=0.40.0              # Claude / Anthropic (US-based, heavy tasks)
 # Perplexity uses OpenAI-compatible API - openai client covers it
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ lxml>=5.2.1
 sqlalchemy>=2.0.30
 psycopg2-binary>=2.9.9
 dnspython>=2.6.1
-jobspy>=1.1.80
+python-jobspy>=1.1.82
 
 # ── US-based API clients (optional enrichment) ───────────────────────────────
 # sendgrid>=6.11.0          # SendGrid / Twilio (US company) - uncomment for email outreach

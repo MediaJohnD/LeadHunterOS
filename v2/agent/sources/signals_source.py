@@ -147,8 +147,8 @@ def search_reddit(
                 cutoff = datetime.now(timezone.utc) - timedelta(days=daysback)
                 for post in posts:
                     d = post.get("data", {})
-                    created = datetime.utcfromtimestamp(d.get("created_utc", 0))
-                    if created < cutoff.replace(tzinfo=None):
+                    created = datetime.fromtimestamp(d.get("created_utc", 0), tz=timezone.utc)
+                    if created < cutoff:
                         continue
                     results.append({
                         "source": "reddit",

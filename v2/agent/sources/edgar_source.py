@@ -15,7 +15,7 @@ No API key. No signup. US government public data.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -49,8 +49,9 @@ def search_funding_rounds(
     """
     results = []
 
-    date_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    date_to = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc)
+    date_from = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    date_to = now.strftime("%Y-%m-%d")
 
     # Search EDGAR full-text search for Form D filings
     search_terms = keywords or ["technology", "software", "fintech"]
