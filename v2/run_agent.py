@@ -21,9 +21,10 @@ from agent.hermes_agent import HermesAgent
 
 DEFAULT_OBJECTIVE = (
     f"Hunt for high-quality SMB leads in {config.TARGET_METRO} and the broader {config.TARGET_REGION} market only. "
-    "Focus on U.S.-based companies with roughly 5-250 employees in home services, agencies, IT services, legal, accounting, healthcare support, logistics, and local B2B software. "
+    f"Restrict all leads to companies operating in or originating from {config.TARGET_COUNTRY}. "
+    "Focus on companies with roughly 5-250 employees in home services, agencies, IT services, legal, accounting, healthcare support, logistics, and local B2B software. "
     "Search for owner, founder, president, general manager, operations manager, and revenue leader titles. "
-    "Use public U.S. signals only: hiring, local expansion, funding, new office openings, service-area growth, technology upgrades, and business launches. "
+    "Use public in-country signals only: hiring, local expansion, funding, new office openings, service-area growth, technology upgrades, and business launches. "
     f"Enrich each lead, score against ICP, and save qualified leads (score >= "
     f"{getattr(config, 'ICP_MIN_SCORE', 70)}/100). "
     "Draft personalized outreach for the top 3 leads."

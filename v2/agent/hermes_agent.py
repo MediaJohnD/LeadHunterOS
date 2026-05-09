@@ -23,6 +23,8 @@ Goal: discover, score, save, and draft outreach for high-fit B2B leads using pub
 Workflow: public signals first, public enrichment second, paid fallbacks only if needed,
 score every candidate, save only leads with icp_score >= {config.ICP_MIN_SCORE}, then draft outreach.
 Emit at most 3 tool calls per turn so local context stays small.
+Country scope is mandatory: only return leads whose operating country or country of origin matches
+{config.TARGET_COUNTRY}. If a candidate appears outside that scope or the country is unclear, exclude it.
 
 Use tools with exact Hermes XML:
 

@@ -497,6 +497,17 @@ def _filter_public_fields(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _scoped_query(query: str) -> str:
+    """Append country/region context when the caller did not specify it."""
+    lower = query.lower()
+    country = config.TARGET_COUNTRY.lower()
+    region = config.TARGET_REGION.lower()
+    metro = config.TARGET_METRO.lower()
+    if country in lower or region in lower or metro in lower:
+        return query
+    return f"{query} {config.TARGET_COUNTRY} {config.TARGET_REGION}".strip()
+
+
 def get_tool_schema_xml() -> str:
     """Return a compact Hermes <tools> block with JSON schemas for every tool.
 
@@ -520,9 +531,10 @@ def _slice_results(results: Any, limit: int) -> list[Any]:
 def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[str, Any]:
     if get_all_signals is None:
         return {"ok": False, "error": "get_all_signals is not available"}
-    results = get_all_signals(keywords=[query], daysback=days_back)
+    scoped = _scoped_query(query)
+    results = get_all_signals(keywords=[scoped], daysback=days_back)
     sliced = _slice_results(results, limit)
-    return {"ok": True, "query": query, "count": len(sliced), "results": sliced}
+    return {"ok": True, "query": scoped, "count": len(sliced), "results": sliced}
 
 
 def _search_reddit_signals(query: str, subreddit: str = "", limit: int = 10) -> dict[str, Any]:
@@ -530,14 +542,14 @@ def _search_reddit_signals(query: str, subreddit: str = "", limit: int = 10) -> 
         return {"ok": False, "error": "search_reddit is not available"}
     # search_reddit takes keywords: list[str], subreddits: list[str] | None
     subreddits = [subreddit] if subreddit else None
-    results = search_reddit(keywords=[query], subreddits=subreddits, max_results=limit)
+    results = search_reddit(keywords=[_scoped_query(query)], subreddits=subreddits, max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_news_signals(query: str, days_back: int = 30, limit: int = 10) -> dict[str, Any]:
     if search_google_news is None:
         return {"ok": False, "error": "search_google_news is not available"}
-    results = search_google_news(keywords=[query], daysback=days_back, max_results=limit)
+    results = search_google_news(keywords=[_scoped_query(query)], daysback=days_back, max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -545,7 +557,7 @@ def _search_github_signals(query: str, limit: int = 10) -> dict[str, Any]:
     if search_github_repos is None:
         return {"ok": False, "error": "search_github_repos is not available"}
     # search_github_repos takes keywords: list[str]
-    results = search_github_repos(keywords=[query], max_results=limit)
+    results = search_github_repos(keywords=[_scoped_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -553,7 +565,7 @@ def _search_hn_signals(query: str, limit: int = 10) -> dict[str, Any]:
     if search_hackernews is None:
         return {"ok": False, "error": "search_hackernews is not available"}
     # search_hackernews takes keywords: list[str]
-    results = search_hackernews(keywords=[query], max_results=limit)
+    results = search_hackernews(keywords=[_scoped_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -561,7 +573,7 @@ def _search_producthunt_signals(query: str, limit: int = 10) -> dict[str, Any]:
     if search_producthunt_launches is None:
         return {"ok": False, "error": "search_producthunt_launches is not available"}
     # search_producthunt_launches takes keywords: list[str]
-    results = search_producthunt_launches(keywords=[query], max_results=limit)
+    results = search_producthunt_launches(keywords=[_scoped_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -569,7 +581,7 @@ def _search_remote_hiring_signals(query: str, limit: int = 10) -> dict[str, Any]
     if search_remoteok_jobs is None:
         return {"ok": False, "error": "search_remoteok_jobs is not available"}
     # search_remoteok_jobs takes keywords: list[str]
-    results = search_remoteok_jobs(keywords=[query], max_results=limit)
+    results = search_remoteok_jobs(keywords=[_scoped_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -577,7 +589,7 @@ def _search_funding_signals(query: str = "", days_back: int = 90, limit: int = 1
     if search_funding_rounds is None:
         return {"ok": False, "error": "search_funding_rounds is not available"}
     # search_funding_rounds takes keywords: list[str] | None
-    keywords = [query] if query else None
+    keywords = [_scoped_query(query)] if query else None
     results = search_funding_rounds(keywords=keywords, days_back=days_back)
     return {"ok": True, "results": _slice_results(results, limit)}
 
@@ -594,8 +606,8 @@ def _search_jobs_public(query: str, location: str = "", days_back: int = 30, lim
         return {"ok": False, "error": "search_jobs is not available"}
     # search_jobs takes job_titles: list[str], hours_old: int (not days_back)
     results = search_jobs(
-        job_titles=[query],
-        location=location or "United States",
+        job_titles=[_scoped_query(query)],
+        location=location or config.TARGET_METRO,
         hours_old=days_back * 24,
         results_wanted=limit,
     )
@@ -612,8 +624,8 @@ def _search_jobs_by_icp_tool(
         return {"ok": False, "error": "search_jobs is not available"}
     # search_jobs takes job_titles: list[str], hours_old: int
     results = search_jobs(
-        job_titles=icp_keywords,
-        location=location or "United States",
+        job_titles=[_scoped_query(keyword) for keyword in icp_keywords],
+        location=location or config.TARGET_METRO,
         hours_old=days_back * 24,
         results_wanted=limit,
     )
@@ -690,21 +702,21 @@ def _verify_mx_public(domain: str) -> dict[str, Any]:
 def _search_public_profiles(query: str, limit: int = 20) -> dict[str, Any]:
     if get_all_public_profiles is None:
         return {"ok": False, "error": "get_all_public_profiles is not available"}
-    results = get_all_public_profiles(keywords=[query], max_results=limit)
+    results = get_all_public_profiles(keywords=[_scoped_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_wellfound_jobs(query: str, limit: int = 20) -> dict[str, Any]:
     if search_wellfound_jobs is None:
         return {"ok": False, "error": "search_wellfound_jobs is not available"}
-    results = search_wellfound_jobs(keywords=[query], max_results=limit)
+    results = search_wellfound_jobs(keywords=[_scoped_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_crunchbase_news(query: str, limit: int = 20) -> dict[str, Any]:
     if search_crunchbase_news is None:
         return {"ok": False, "error": "search_crunchbase_news is not available"}
-    results = search_crunchbase_news(keywords=[query], max_results=limit)
+    results = search_crunchbase_news(keywords=[_scoped_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
@@ -718,21 +730,21 @@ def _scrape_team_page(company_name: str, domain: str, limit: int = 10) -> dict[s
 def _search_conference_speakers(query: str, limit: int = 20) -> dict[str, Any]:
     if search_conference_speakers is None:
         return {"ok": False, "error": "search_conference_speakers is not available"}
-    results = search_conference_speakers(keywords=[query], max_results=limit)
+    results = search_conference_speakers(keywords=[_scoped_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_orcid_profiles(query: str, limit: int = 15) -> dict[str, Any]:
     if search_orcid_profiles is None:
         return {"ok": False, "error": "search_orcid_profiles is not available"}
-    results = search_orcid_profiles(keywords=[query], max_results=limit)
+    results = search_orcid_profiles(keywords=[_scoped_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
 def _search_glassdoor_signals(query: str, limit: int = 15) -> dict[str, Any]:
     if search_glassdoor_news is None:
         return {"ok": False, "error": "search_glassdoor_news is not available"}
-    results = search_glassdoor_news(keywords=[query], max_results=limit)
+    results = search_glassdoor_news(keywords=[_scoped_query(query)], max_results=limit)
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
