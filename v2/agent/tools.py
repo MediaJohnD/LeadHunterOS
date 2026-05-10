@@ -24,6 +24,9 @@ from agent.database import (
     save_public_lead,
     get_tool_failure_penalty,
     is_suppressed,
+    get_entity_context,
+    record_outcome_feedback,
+    get_outcome_score_adjustment,
 )
 
 try:
@@ -534,6 +537,23 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["name", "title", "company"]
         }
     },
+    {
+        "name": "record_outcome_feedback",
+        "description": "Record downstream CRM outcomes (reply/meeting/converted/unqualified/bounce) for self-learning.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "lead_id": {"type": "string"},
+                "outcome_type": {"type": "string"},
+                "outcome_value": {"type": "number"},
+                "source_type": {"type": "string"},
+                "industry": {"type": "string"},
+                "title": {"type": "string"},
+                "notes": {"type": "string"}
+            },
+            "required": ["lead_id", "outcome_type"]
+        }
+    },
 ]
 
 
@@ -945,6 +965,14 @@ def _score_components(
     evidence += _source_reliability_score(source_type, source_url)
     evidence += _country_scope_bonus({"work_location": work_location})
 
+    learning_adjustment = get_outcome_score_adjustment(
+        source_type=source_type,
+        industry=industry,
+        title=title,
+        window=getattr(config, "OUTCOME_LEARNING_WINDOW", 200),
+    )
+    intent_strength = max(0, min(100, intent_strength + learning_adjustment))
+
     return {
         "icp_fit_score": max(0, min(icp_fit, 100)),
         "intent_strength_score": max(0, min(intent_strength, 100)),
@@ -1062,12 +1090,41 @@ def _slice_results(results: Any, limit: int) -> list[Any]:
 # ---------------------------------------------------------------------------
 
 def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[str, Any]:
-    if get_all_signals is None:
-        return {"ok": False, "error": "get_all_signals is not available"}
     scoped = _normalize_signal_query(query)
-    results = get_all_signals(keywords=[scoped], daysback=days_back)
-    sliced = _slice_results(results, limit)
-    return {"ok": True, "query": scoped, "count": len(sliced), "results": sliced}
+    merged: list[Any] = []
+    providers: list[str] = []
+    if get_all_signals is not None:
+        results = get_all_signals(keywords=[scoped], daysback=days_back)
+        merged.extend(_slice_results(results, limit))
+        providers.append("all_signals")
+    if len(merged) < max(1, int(getattr(config, "MIN_DISCOVERY_RESULTS", 8))):
+        for fn_name, fn in [
+            ("news", search_google_news),
+            ("reddit", search_reddit),
+            ("hn", search_hackernews),
+            ("github", search_github_repos),
+            ("producthunt", search_producthunt_launches),
+            ("remoteok", search_remoteok_jobs),
+        ]:
+            if fn is None:
+                continue
+            try:
+                batch = fn(keywords=[scoped], max_results=max(5, limit // 2))
+                merged.extend(_slice_results(batch, max(5, limit // 2)))
+                providers.append(fn_name)
+            except Exception:
+                continue
+    deduped: list[Any] = []
+    seen: set[str] = set()
+    for item in merged:
+        key = json.dumps(item, sort_keys=True, default=str)[:240]
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+        if len(deduped) >= limit:
+            break
+    return {"ok": True, "query": scoped, "count": len(deduped), "providers_used": providers, "results": deduped}
 
 
 def _search_reddit_signals(query: str, subreddit: str = "", limit: int = 10) -> dict[str, Any]:
@@ -1145,10 +1202,21 @@ def _search_jobs_public(query: str, location: str = "", days_back: int = 30, lim
         hours_old=days_back * 24,
         results_wanted=limit,
     )
+    fallback_used = False
+    if not results:
+        fallback_used = True
+        broadened_titles = _normalize_job_titles("operations manager, office manager, sales manager, service manager")
+        results = search_jobs(
+            job_titles=broadened_titles,
+            location=config.TARGET_REGION or config.TARGET_METRO,
+            hours_old=max(24, days_back * 24),
+            results_wanted=limit,
+        )
     return {
         "ok": True,
         "query": query,
         "normalized_job_titles": job_titles,
+        "fallback_used": fallback_used,
         "results": _slice_results(results, limit),
     }
 
@@ -1222,6 +1290,16 @@ def _enrich_lead_waterfall(
     provenance: list[dict[str, Any]] = []
     aggregate: dict[str, Any] = {"name": name, "company": company}
     confidence = 0
+
+    # Step 0: entity graph context
+    graph = get_entity_context(full_name=name, company_domain=domain, company_name=company)
+    if graph.get("ok"):
+        aggregate["entity_graph"] = graph
+        if graph.get("entities"):
+            confidence += 15
+            provenance.append({"step": "entity_graph_context", "ok": True, "confidence_delta": 15})
+    else:
+        provenance.append({"step": "entity_graph_context", "ok": False, "confidence_delta": 0})
 
     # Step 1: public lead enrichment
     public = _enrich_lead_public(name=name, company=company, domain=domain, website=website)
@@ -1616,6 +1694,10 @@ def _save_lead(**payload: Any) -> dict[str, Any]:
     cleaned["recency_score"] = components["recency_score"]
     cleaned["evidence_confidence_score"] = components["evidence_confidence_score"]
     cleaned["icp_score"] = int(cleaned.get("icp_score", computed_icp) or computed_icp)
+    cleaned["decision_reason"] = (
+        cleaned.get("decision_reason")
+        or f"icp={cleaned['icp_score']}, evidence={components['evidence_score']}, intent={components['intent_strength_score']}"
+    )
     if cleaned["icp_score"] < config.ICP_MIN_SCORE:
         return {"ok": False, "saved": False, "error": f"Lead score below ICP threshold ({config.ICP_MIN_SCORE}).", "lead": cleaned}
     if components["evidence_score"] < config.MIN_EVIDENCE_SCORE:
@@ -1657,6 +1739,26 @@ def _draft_outreach(
     return {"ok": True, "message": body}
 
 
+def _record_outcome_feedback(
+    lead_id: str,
+    outcome_type: str,
+    outcome_value: float = 1.0,
+    source_type: str = "",
+    industry: str = "",
+    title: str = "",
+    notes: str = "",
+) -> dict[str, Any]:
+    return record_outcome_feedback(
+        lead_id=lead_id,
+        outcome_type=outcome_type,
+        outcome_value=outcome_value,
+        source_type=source_type,
+        industry=industry,
+        title=title,
+        notes=notes,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -1696,6 +1798,7 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         "orchestrate_playbook": _orchestrate_playbook,
         "save_lead": _save_lead,
         "draft_outreach": _draft_outreach,
+        "record_outcome_feedback": _record_outcome_feedback,
     }
     handler = handlers.get(name)
     if not handler:

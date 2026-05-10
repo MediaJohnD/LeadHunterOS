@@ -28,7 +28,7 @@ DEFAULT_OBJECTIVE = (
     "Use public in-country signals only: hiring, local expansion, funding, new office openings, service-area growth, technology upgrades, and business launches. "
     f"Enrich each lead, score against ICP, and save qualified leads (score >= "
     f"{getattr(config, 'ICP_MIN_SCORE', 70)}/100). "
-    "Draft personalized outreach for the top 3 leads."
+    "Prepare CRM handoff notes for the top 3 qualified leads."
 )
 
 

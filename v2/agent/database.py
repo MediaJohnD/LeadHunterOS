@@ -103,6 +103,7 @@ def _ensure_sqlite_schema(engine: Engine) -> None:
         """))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_edges_from ON entity_edges(from_entity_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_edges_to ON entity_edges(to_entity_id)"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique ON entity_edges(from_entity_id, to_entity_id, relation_type)"))
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS run_health (
               event_id TEXT PRIMARY KEY,
@@ -118,6 +119,21 @@ def _ensure_sqlite_schema(engine: Engine) -> None:
         """))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_run_health_component ON run_health(component)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_run_health_tool ON run_health(tool_name)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS outcome_feedback (
+              feedback_id TEXT PRIMARY KEY,
+              lead_id TEXT,
+              outcome_type TEXT NOT NULL,
+              outcome_value REAL DEFAULT 1.0,
+              source_type TEXT,
+              industry TEXT,
+              title TEXT,
+              observed_at TEXT NOT NULL,
+              notes TEXT
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_outcome_type ON outcome_feedback(outcome_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_outcome_source ON outcome_feedback(source_type)"))
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS suppressions (
               suppression_id TEXT PRIMARY KEY,
@@ -228,8 +244,11 @@ def _insert_lead_row(engine: Engine, row: dict[str, Any]) -> None:
 
 
 def _upsert_entity_graph(engine: Engine, row: dict[str, Any]) -> None:
-    person_key = (row.get("full_name") or "").strip().lower()
-    company_key = (row.get("company_domain") or row.get("company_name") or "").strip().lower()
+    person_name = (row.get("full_name") or "").strip()
+    person_key = person_name.lower()
+    company_name = (row.get("company_name") or "").strip()
+    company_domain = (row.get("company_domain") or "").strip().lower()
+    company_key = (company_domain or company_name.lower()).strip()
     if not person_key or not company_key:
         return
     person_id = str(uuid.uuid4())
@@ -251,10 +270,16 @@ def _upsert_entity_graph(engine: Engine, row: dict[str, Any]) -> None:
             {
                 "id": person_id,
                 "etype": "person",
-                "name": row.get("full_name"),
+                "name": person_name,
                 "ckey": person_key,
                 "conf": 0.7,
-                "meta": _json({"title": row.get("title")}),
+                "meta": _json(
+                    {
+                        "title": row.get("title"),
+                        "company_domain": company_domain,
+                        "company_name": company_name,
+                    }
+                ),
                 "now": now,
             },
         )
@@ -272,13 +297,35 @@ def _upsert_entity_graph(engine: Engine, row: dict[str, Any]) -> None:
             {
                 "id": company_id,
                 "etype": "company",
-                "name": row.get("company_name"),
+                "name": company_name,
                 "ckey": company_key,
                 "conf": 0.8,
-                "meta": _json({"industry": row.get("industry")}),
+                "meta": _json({"industry": row.get("industry"), "domain": company_domain}),
                 "now": now,
             },
         )
+        if company_domain and company_name:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO lead_entities (entity_id, entity_type, display_name, canonical_key, confidence, metadata, created_at, updated_at)
+                    VALUES (:id, :etype, :name, :ckey, :conf, :meta, :now, :now)
+                    ON CONFLICT(canonical_key) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        confidence = CASE WHEN excluded.confidence > lead_entities.confidence THEN excluded.confidence ELSE lead_entities.confidence END,
+                        updated_at = excluded.updated_at
+                    """
+                ),
+                {
+                    "id": str(uuid.uuid4()),
+                    "etype": "company",
+                    "name": company_name,
+                    "ckey": company_name.lower(),
+                    "conf": 0.72,
+                    "meta": _json({"industry": row.get("industry"), "domain": company_domain}),
+                    "now": now,
+                },
+            )
         person_entity_id = conn.execute(
             text("SELECT entity_id FROM lead_entities WHERE canonical_key = :ckey LIMIT 1"),
             {"ckey": person_key},
@@ -293,6 +340,10 @@ def _upsert_entity_graph(engine: Engine, row: dict[str, Any]) -> None:
                     """
                     INSERT INTO entity_edges (edge_id, from_entity_id, to_entity_id, relation_type, confidence, source_tool, source_url, created_at)
                     VALUES (:edge_id, :from_id, :to_id, :rtype, :conf, :tool, :url, :created_at)
+                    ON CONFLICT(from_entity_id, to_entity_id, relation_type) DO UPDATE SET
+                      confidence = CASE WHEN excluded.confidence > entity_edges.confidence THEN excluded.confidence ELSE entity_edges.confidence END,
+                      source_tool = COALESCE(excluded.source_tool, entity_edges.source_tool),
+                      source_url = COALESCE(excluded.source_url, entity_edges.source_url)
                     """
                 ),
                 {
@@ -306,6 +357,61 @@ def _upsert_entity_graph(engine: Engine, row: dict[str, Any]) -> None:
                     "created_at": now,
                 },
             )
+
+
+def get_entity_context(
+    *,
+    full_name: str = "",
+    company_domain: str = "",
+    company_name: str = "",
+    edge_limit: int = 20,
+) -> dict[str, Any]:
+    engine = _engine()
+    ensure_schema()
+    person_key = (full_name or "").strip().lower()
+    company_key = (company_domain or company_name or "").strip().lower()
+    if not person_key and not company_key:
+        return {"ok": True, "entities": [], "edges": []}
+    try:
+        with engine.begin() as conn:
+            entities = conn.execute(
+                text(
+                    """
+                    SELECT entity_id, entity_type, display_name, canonical_key, confidence
+                    FROM lead_entities
+                    WHERE (:person_key != '' AND canonical_key = :person_key)
+                       OR (:company_key != '' AND canonical_key = :company_key)
+                    LIMIT 10
+                    """
+                ),
+                {"person_key": person_key, "company_key": company_key},
+            ).mappings().all()
+            if not entities:
+                return {"ok": True, "entities": [], "edges": []}
+            edge_rows = conn.execute(
+                text(
+                    """
+                    SELECT edge_id, from_entity_id, to_entity_id, relation_type, confidence, source_tool, source_url
+                    FROM entity_edges
+                    WHERE from_entity_id IN (
+                        SELECT entity_id FROM lead_entities
+                        WHERE (:person_key != '' AND canonical_key = :person_key)
+                           OR (:company_key != '' AND canonical_key = :company_key)
+                    )
+                       OR to_entity_id IN (
+                        SELECT entity_id FROM lead_entities
+                        WHERE (:person_key != '' AND canonical_key = :person_key)
+                           OR (:company_key != '' AND canonical_key = :company_key)
+                    )
+                    ORDER BY confidence DESC
+                    LIMIT :edge_limit
+                    """
+                ),
+                {"person_key": person_key, "company_key": company_key, "edge_limit": max(1, int(edge_limit))},
+            ).mappings().all()
+        return {"ok": True, "entities": [dict(row) for row in entities], "edges": [dict(row) for row in edge_rows]}
+    except SQLAlchemyError:
+        return {"ok": False, "entities": [], "edges": []}
 
 
 def export_latest_leads_csv(path: str, limit: int = 200) -> dict[str, Any]:
@@ -464,3 +570,96 @@ def is_suppressed(suppression_type: str, suppression_value: str) -> bool:
             return bool(row)
     except SQLAlchemyError:
         return False
+
+
+def record_outcome_feedback(
+    *,
+    lead_id: str,
+    outcome_type: str,
+    outcome_value: float = 1.0,
+    source_type: str = "",
+    industry: str = "",
+    title: str = "",
+    notes: str = "",
+) -> dict[str, Any]:
+    engine = _engine()
+    ensure_schema()
+    row = {
+        "feedback_id": str(uuid.uuid4()),
+        "lead_id": lead_id,
+        "outcome_type": (outcome_type or "").strip().lower(),
+        "outcome_value": float(outcome_value or 0),
+        "source_type": (source_type or "").strip().lower(),
+        "industry": (industry or "").strip().lower(),
+        "title": (title or "").strip().lower(),
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "notes": (notes or "")[:1000],
+    }
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO outcome_feedback (
+                      feedback_id, lead_id, outcome_type, outcome_value, source_type, industry, title, observed_at, notes
+                    ) VALUES (
+                      :feedback_id, :lead_id, :outcome_type, :outcome_value, :source_type, :industry, :title, :observed_at, :notes
+                    )
+                    """
+                ),
+                row,
+            )
+    except SQLAlchemyError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "feedback_id": row["feedback_id"]}
+
+
+def get_outcome_score_adjustment(
+    *,
+    source_type: str = "",
+    industry: str = "",
+    title: str = "",
+    window: int = 200,
+) -> int:
+    if not getattr(config, "OUTCOME_LEARNING_ENABLED", True):
+        return 0
+    engine = _engine()
+    ensure_schema()
+    params = {
+        "window": max(20, int(window)),
+        "source_type": (source_type or "").strip().lower(),
+        "industry": (industry or "").strip().lower(),
+        "title": (title or "").strip().lower(),
+    }
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT outcome_type, outcome_value
+                    FROM outcome_feedback
+                    WHERE (:source_type = '' OR source_type = :source_type)
+                      AND (:industry = '' OR industry = :industry)
+                      AND (:title = '' OR title = :title)
+                    ORDER BY observed_at DESC
+                    LIMIT :window
+                    """
+                ),
+                params,
+            ).all()
+    except SQLAlchemyError:
+        return 0
+    if not rows:
+        return 0
+    positive = 0.0
+    negative = 0.0
+    for outcome_type, value in rows:
+        t = str(outcome_type or "").lower()
+        v = float(value or 0)
+        if t in {"reply", "meeting", "qualified", "converted"}:
+            positive += max(0.0, v)
+        elif t in {"bounce", "unqualified", "spam", "rejected"}:
+            negative += max(0.0, v)
+    raw = positive - negative
+    cap = max(0, int(getattr(config, "OUTCOME_BONUS_MAX", 15)))
+    return int(max(-cap, min(cap, round(raw))))

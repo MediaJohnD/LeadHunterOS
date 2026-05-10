@@ -81,6 +81,8 @@ class HermesAgent:
         tool_result_cache: dict[str, dict[str, Any]] = {}
         tools_seen: set[str] = set()
         premature_finalizations = 0
+        repeated_tool_counts: dict[str, int] = {}
+        last_tool_names: list[str] = []
 
         while iterations < MAX_ITERATIONS:
             iterations += 1
@@ -137,12 +139,13 @@ class HermesAgent:
             if not tool_calls and not parse_errors:
                 no_progress_turns += 1
                 logger.warning(f"[{self.session_id}] No tool call or final answer. Nudging.")
-                if no_progress_turns >= 2:
+                if no_progress_turns >= max(1, int(getattr(config, "AUTO_REPAIR_NO_PROGRESS_LIMIT", 2))):
                     messages.append({
                         "role": "user",
                         "content": (
-                            "No valid tool calls detected twice in a row. "
-                            "Return FINAL ANSWER now with best verified findings and explicit gaps."
+                            "No valid tool calls detected repeatedly. "
+                            "Use exactly two tool calls now: search_signals then rank_leads. "
+                            "If no candidates, return FINAL ANSWER with explicit blocker list."
                         ),
                     })
                     continue
@@ -171,6 +174,26 @@ class HermesAgent:
                 args_preview = str(tool_args)[:200]
                 logger.info(f"[{self.session_id}] Calling tool: {tool_name}({args_preview})")
                 tools_seen.add(tool_name)
+                repeated_tool_counts[tool_name] = repeated_tool_counts.get(tool_name, 0) + 1
+                last_tool_names.append(tool_name)
+                if len(last_tool_names) > 10:
+                    last_tool_names = last_tool_names[-10:]
+
+                if repeated_tool_counts[tool_name] > max(1, int(getattr(config, "AUTO_REPAIR_REPEAT_TOOL_LIMIT", 3))):
+                    result = {
+                        "ok": False,
+                        "error": (
+                            f"Auto-repair guard: tool '{tool_name}' exceeded repeat limit. "
+                            "Switch to a different discovery or ranking tool."
+                        ),
+                    }
+                    tool_responses.append(
+                        f"<tool_response>\n"
+                        f"Tool: {tool_name}\n"
+                        f"Result: {json.dumps(result, separators=(',', ':'), default=str)}\n"
+                        f"</tool_response>"
+                    )
+                    continue
 
                 if tool_name not in _VALID_TOOL_NAMES:
                     result: dict[str, Any] = {
@@ -228,6 +251,18 @@ class HermesAgent:
                 )
 
             messages.append({"role": "user", "content": self._fit_tool_responses(tool_responses)})
+
+            # Auto-repair escalation: if we are looping without meaningful progression, force shortest gate path.
+            if iterations >= 3 and len(last_tool_names) >= 6:
+                recent = last_tool_names[-6:]
+                if len(set(recent)) <= 2:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Auto-repair mode: avoid repeating recent tools. "
+                            "Run rank_leads on current candidates, then orchestrate_playbook, then FINAL ANSWER."
+                        ),
+                    })
 
         if iterations >= MAX_ITERATIONS:
             logger.warning(f"[{self.session_id}] Hit max iterations ({MAX_ITERATIONS})")
