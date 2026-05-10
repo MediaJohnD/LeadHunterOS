@@ -161,20 +161,29 @@ def export_latest_leads_csv(path: str, limit: int = 200) -> dict[str, Any]:
     """Export recent leads to CSV for operator review and downstream workflows."""
     engine = _engine()
     ensure_schema()
-    with engine.begin() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT id, full_name, title, company_name, company_domain, industry,
-                       employee_count, company_location, icp_score, status,
-                       signal_type, signal_source, signal_summary, created_at
-                FROM leads
-                ORDER BY created_at DESC
-                LIMIT :limit
-                """
-            ),
-            {"limit": max(1, int(limit))},
-        ).mappings().all()
+    query = text(
+        """
+        SELECT id, full_name, title, company_name, company_domain, industry,
+               employee_count, company_location, icp_score, status,
+               signal_type, signal_source, signal_summary, created_at
+        FROM leads
+        ORDER BY created_at DESC
+        LIMIT :limit
+        """
+    )
+
+    fallback_used = False
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(query, {"limit": max(1, int(limit))}).mappings().all()
+    except SQLAlchemyError:
+        if engine.dialect.name == "sqlite":
+            raise
+        fallback_used = True
+        fallback_engine = _sqlite_fallback_engine()
+        _ensure_sqlite_schema(fallback_engine)
+        with fallback_engine.begin() as conn:
+            rows = conn.execute(query, {"limit": max(1, int(limit))}).mappings().all()
 
     headers = [
         "id", "full_name", "title", "company_name", "company_domain", "industry",
@@ -187,4 +196,9 @@ def export_latest_leads_csv(path: str, limit: int = 200) -> dict[str, Any]:
         for row in rows:
             writer.writerow({h: row.get(h, "") for h in headers})
 
-    return {"ok": True, "path": path, "rows": len(rows)}
+    return {
+        "ok": True,
+        "path": path,
+        "rows": len(rows),
+        "database": "sqlite_fallback" if fallback_used else engine.dialect.name,
+    }
