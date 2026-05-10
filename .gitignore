@@ -49,3 +49,4 @@ v2/ui/.turbo/
 v2/ui/.cache/
 v2/ui/public/sw.js
 v2/ui/public/workbox-*.js
+v2/leadhunter.db.bak_*
