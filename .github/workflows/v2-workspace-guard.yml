@@ -1,0 +1,25 @@
+name: v2 Workspace Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  workspace-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail on nested v2 directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          nested="$(find v2 -type d -path '*/v2/*' -print || true)"
+          if [[ -n "${nested}" ]]; then
+            echo "Nested v2 directories are not allowed:"
+            echo "${nested}"
+            exit 1
+          fi
+          echo "Workspace guard passed: no nested v2 directories found."
