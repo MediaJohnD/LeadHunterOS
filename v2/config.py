@@ -143,3 +143,9 @@ NEWSAPI_KEY: str = os.getenv("NEWSAPI_KEY", "")
 # -- JOBSPY SETTINGS ----------------------------------------------------------
 # Default excludes zip_recruiter because it frequently returns 403.
 JOBSPY_SITES: str = os.getenv("JOBSPY_SITES", "linkedin,indeed,google")
+
+# -- OPERATOR CONTROLS --------------------------------------------------------
+SUPPRESSED_COMPANIES: str = os.getenv("SUPPRESSED_COMPANIES", "")
+SUPPRESSED_DOMAINS: str = os.getenv("SUPPRESSED_DOMAINS", "")
+SUPPRESSED_TITLES: str = os.getenv("SUPPRESSED_TITLES", "")
+ENABLE_OUTREACH_ACTIONS: bool = _bool("ENABLE_OUTREACH_ACTIONS", False)

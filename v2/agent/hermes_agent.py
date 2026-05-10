@@ -11,6 +11,7 @@ from typing import Any
 from loguru import logger
 
 import config
+from agent.database import record_tool_health_event
 from agent.llm_router import LLMRouter
 from agent.tools import TOOLS, dispatch_tool, get_tool_schema_xml
 
@@ -24,7 +25,7 @@ Rules:
 3) Never invent data. No placeholders.
 4) Enforce SMB ICP hard filters before save/outreach (titles, industries, company-size range).
 5) Save only leads meeting gates: icp_score >= {config.ICP_MIN_SCORE}.
-6) Draft outreach only for verified, saved leads.
+6) Outreach generation is disabled; prepare CRM handoff notes instead.
 7) Max 3 tool calls per turn.
 
 Tool call format:
@@ -190,10 +191,25 @@ class HermesAgent:
                             result = dispatch_tool(tool_name, tool_args)
                             if cache_key:
                                 tool_result_cache[cache_key] = dict(result)
+                        record_tool_health_event(
+                            component="tool_dispatch",
+                            tool_name=tool_name,
+                            source_name=str(tool_args.get("source_type", "")),
+                            ok=bool(result.get("ok", False)),
+                            error_text=str(result.get("error", "")) if not result.get("ok", True) else "",
+                            context={"session_id": self.session_id, "iteration": iterations},
+                        )
                         if tool_name == "save_lead" and result.get("saved"):
                             leads_saved.append(result.get("lead", result))
                     except Exception as exc:
                         result = {"ok": False, "error": str(exc), "tool": tool_name}
+                        record_tool_health_event(
+                            component="tool_dispatch",
+                            tool_name=tool_name,
+                            ok=False,
+                            error_text=str(exc),
+                            context={"session_id": self.session_id, "iteration": iterations},
+                        )
                         logger.warning(f"[{self.session_id}] Tool {tool_name} error: {exc}")
 
                 compact_result = self._compact_tool_result(result)

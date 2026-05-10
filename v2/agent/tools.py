@@ -20,7 +20,11 @@ from typing import Any
 from loguru import logger
 
 import config
-from agent.database import save_public_lead
+from agent.database import (
+    save_public_lead,
+    get_tool_failure_penalty,
+    is_suppressed,
+)
 
 try:
     from agent.sources import (
@@ -230,6 +234,20 @@ TOOLS: list[dict[str, Any]] = [
                 "company": {"type": "string", "description": "Company name."},
                 "domain": {"type": "string", "description": "Company domain."},
                 "website": {"type": "string", "description": "Company website URL."}
+            },
+            "required": ["name"]
+        }
+    },
+    {
+        "name": "enrich_lead_waterfall",
+        "description": "Run enrichment waterfall with provenance and confidence scores.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "company": {"type": "string"},
+                "domain": {"type": "string"},
+                "website": {"type": "string"}
             },
             "required": ["name"]
         }
@@ -641,6 +659,11 @@ def _csv_tokens(value: str) -> list[str]:
     return [item.strip().lower() for item in value.split(",") if item.strip()]
 
 
+_SUPPRESSED_COMPANIES = set(_csv_tokens(getattr(config, "SUPPRESSED_COMPANIES", "")))
+_SUPPRESSED_DOMAINS = set(_csv_tokens(getattr(config, "SUPPRESSED_DOMAINS", "")))
+_SUPPRESSED_TITLES = set(_csv_tokens(getattr(config, "SUPPRESSED_TITLES", "")))
+
+
 def _coerce_int(value: Any) -> int | None:
     if isinstance(value, int):
         return value
@@ -799,6 +822,9 @@ def _validate_public_lead(payload: dict[str, Any]) -> str | None:
         return "Lead source URL is not verifiable."
     if source_type and _looks_placeholder(source_type):
         return "Lead source type is not verifiable."
+    suppressed = _suppression_reason(company=company, domain=domain, title=title)
+    if suppressed:
+        return suppressed
     size_value = _coerce_int(payload.get("company_size"))
     passes_filter, reason = _passes_icp_hard_filter(
         title=title,
@@ -816,6 +842,25 @@ def _validate_outreach_identity(name: str, company: str, signal: str) -> str | N
         return "Outreach requires a verified real person and company."
     if not signal.strip() or _looks_placeholder(signal):
         return "Outreach requires a concrete, non-placeholder signal."
+    return None
+
+
+def _suppression_reason(
+    *,
+    company: str,
+    domain: str,
+    title: str,
+) -> str | None:
+    company_l = company.strip().lower()
+    domain_l = _extract_domain(domain)
+    title_l = title.strip().lower()
+
+    if company_l and (company_l in _SUPPRESSED_COMPANIES or is_suppressed("company", company_l)):
+        return f"Company is suppressed: {company}"
+    if domain_l and (domain_l in _SUPPRESSED_DOMAINS or is_suppressed("domain", domain_l)):
+        return f"Domain is suppressed: {domain_l}"
+    if title_l and (title_l in _SUPPRESSED_TITLES or is_suppressed("title", title_l)):
+        return f"Title is suppressed: {title}"
     return None
 
 
@@ -961,7 +1006,8 @@ def _source_reliability_score(source_type: str, source_url: str) -> int:
         score += 8
     if su.startswith("http"):
         score += 6
-    return min(score, 30)
+    penalty = get_tool_failure_penalty(tool_name=st or "unknown_source", source_name=st or "")
+    return max(0, min(score - penalty, 30))
 
 
 def _merge_lead_records(primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
@@ -1165,6 +1211,60 @@ def _enrich_lead_public(
         "name": name, "company": company, "company_domain": resolved_domain, "company_url": website
     }
     return {"ok": True, "data": _filter_public_fields(payload)}
+
+
+def _enrich_lead_waterfall(
+    name: str,
+    company: str = "",
+    domain: str = "",
+    website: str = "",
+) -> dict[str, Any]:
+    provenance: list[dict[str, Any]] = []
+    aggregate: dict[str, Any] = {"name": name, "company": company}
+    confidence = 0
+
+    # Step 1: public lead enrichment
+    public = _enrich_lead_public(name=name, company=company, domain=domain, website=website)
+    provenance.append({"step": "enrich_lead_public", "ok": bool(public.get("ok")), "confidence_delta": 25})
+    if public.get("ok") and isinstance(public.get("data"), dict):
+        aggregate.update(public["data"])
+        confidence += 25
+
+    # Step 2: website scrape if available
+    company_url = str(aggregate.get("company_url") or website or "").strip()
+    if company_url:
+        scraped = _scrape_company_website(company_url)
+        provenance.append({"step": "scrape_company_website", "ok": bool(scraped.get("ok")), "confidence_delta": 20})
+        if scraped.get("ok"):
+            aggregate["website_metadata"] = scraped.get("data", {})
+            confidence += 20
+
+    # Step 3: email candidates and MX checks when domain exists
+    resolved_domain = str(aggregate.get("company_domain") or domain or "").strip()
+    if resolved_domain:
+        emails = _generate_email_candidates_public(name=name, domain=resolved_domain)
+        provenance.append({"step": "generate_email_candidates_public", "ok": bool(emails.get("ok")), "confidence_delta": 15})
+        if emails.get("ok"):
+            aggregate["email_candidates"] = emails.get("results", [])
+            confidence += 15
+        mx = _verify_mx_public(resolved_domain)
+        provenance.append({"step": "verify_mx_public", "ok": bool(mx.get("ok")), "confidence_delta": 15})
+        if mx.get("ok"):
+            aggregate["mx_verification"] = mx.get("result", {})
+            confidence += 15
+
+    # Step 4: optional fallbacks (kept no-op when keys absent)
+    fallback = _enrich_apollo(name=name, company=company, domain=resolved_domain)
+    provenance.append({"step": "enrich_apollo", "ok": bool(fallback.get("ok")), "confidence_delta": 5})
+    if fallback.get("ok"):
+        aggregate["apollo_fallback"] = fallback
+        confidence += 5
+
+    return {
+        "ok": True,
+        "data": _filter_public_fields(aggregate) | {"provenance": provenance},
+        "confidence": min(100, confidence),
+    }
 
 
 def _enrich_leads_batch_public(leads: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1480,7 +1580,7 @@ def _orchestrate_playbook(
             "icp_min_score": config.ICP_MIN_SCORE,
             "min_evidence_score": config.MIN_EVIDENCE_SCORE,
         },
-        "next_step": "save_then_draft_outreach" if selected else "collect_more_signals",
+        "next_step": "save_for_crm_handoff" if selected else "collect_more_signals",
     }
 
 
@@ -1539,6 +1639,11 @@ def _draft_outreach(
     signal: str = "",
     tone: str = "professional",
 ) -> dict[str, Any]:
+    if not getattr(config, "ENABLE_OUTREACH_ACTIONS", False):
+        return {
+            "ok": False,
+            "error": "Outreach actions are disabled in LeadHunterOS. Use CRM/HubSpot/Apollo outbound tools.",
+        }
     validation_error = _validate_outreach_identity(name, company, signal)
     if validation_error:
         return {"ok": False, "error": validation_error}
@@ -1570,6 +1675,7 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         "search_jobs_public": _search_jobs_public,
         "search_jobs_by_icp": _search_jobs_by_icp_tool,
         "enrich_lead_public": _enrich_lead_public,
+        "enrich_lead_waterfall": _enrich_lead_waterfall,
         "enrich_leads_batch_public": _enrich_leads_batch_public,
         "scrape_company_website": _scrape_company_website,
         "generate_email_candidates_public": _generate_email_candidates_public,
