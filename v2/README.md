@@ -1,22 +1,17 @@
 # LeadHunterOS v2 — True Hermes Agent Edition
 
-> **The open-source autonomous B2B lead intelligence agent that outperforms Gojiberry AI ($99/mo), Intently, and Unify GTM ($1,740/mo) — running entirely on your local AMD machine.**
+> **Open-source autonomous B2B lead intelligence agent, optimized for high-quality discovery, enrichment, and CRM handoff.**
 > Last audited: May 6, 2026
 
 ---
 
-## Why LeadHunterOS v2 Beats the Competition
+## Why LeadHunterOS v2
 
-| Capability | Gojiberry AI | Intently | Unify GTM | LeadHunterOS v2 |
-|---|---|---|---|---|
-| **Monthly Cost** | $99/seat | ~$200+/seat | $1,740+ | **$0 local / ~$20 API** |
-| **LinkedIn-only signals** | ✅ 30 signals | ✅ | ❌ | ❌ **Multi-source** |
-| **Reddit/News/Web signals** | ❌ | ❌ | Partial | ✅ **All 3** |
-| **Runs 100% locally** | ❌ Cloud | ❌ Cloud | ❌ Cloud | ✅ **Your AMD PC** |
-| **Custom ICP logic** | Limited | Limited | Limited | ✅ **Full control** |
-| **True autonomous agent** | ❌ Rule-based | ❌ | ❌ | ✅ **Hermes ReAct** |
-| **Multi-LLM routing** | ❌ | ❌ | ❌ | ✅ **Local-first with optional cloud fallbacks** |
-| **Your data stays local** | ❌ | ❌ | ❌ | ✅ **Always** |
+- Multi-source signal discovery with US-scope controls.
+- Deterministic ICP scoring and qualification gates.
+- Enrichment waterfall with provenance, confidence, and contact tiers.
+- Entity graph, attribution fields, and operator suppression controls.
+- Self-healing runtime behavior with health ledger and outcome learning.
 
 ---
 
