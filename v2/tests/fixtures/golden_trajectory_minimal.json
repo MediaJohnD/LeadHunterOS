@@ -1,0 +1,92 @@
+{
+  "run_id": "golden-run-001",
+  "session_id": "golden-session",
+  "created_at": "2026-05-10T00:00:00+00:00",
+  "objective": "Find qualified US SMB leads and orchestrate top results.",
+  "trace_id": "trace-golden",
+  "correlation_id": "corr-golden",
+  "context": {
+    "max_iterations": 15
+  },
+  "steps": [
+    {
+      "index": 1,
+      "kind": "provider_response",
+      "observed_at": "2026-05-10T00:00:01+00:00",
+      "provider": "local",
+      "model": "golden-model",
+      "message": "<tool_call>{\"name\":\"search_signals\",\"arguments\":{\"query\":\"US SMB\",\"limit\":3}}</tool_call>",
+      "tool_name": "",
+      "tool_args": {},
+      "tool_result": {},
+      "error": "",
+      "latency_ms": 1200,
+      "metadata": {}
+    },
+    {
+      "index": 2,
+      "kind": "tool_result",
+      "observed_at": "2026-05-10T00:00:02+00:00",
+      "provider": "",
+      "model": "",
+      "message": "",
+      "tool_name": "search_signals",
+      "tool_args": {
+        "query": "US SMB",
+        "limit": 3
+      },
+      "tool_result": {
+        "ok": true
+      },
+      "error": "",
+      "latency_ms": 0,
+      "metadata": {}
+    },
+    {
+      "index": 3,
+      "kind": "tool_result",
+      "observed_at": "2026-05-10T00:00:03+00:00",
+      "provider": "",
+      "model": "",
+      "message": "",
+      "tool_name": "rank_leads",
+      "tool_args": {
+        "top_n": 3
+      },
+      "tool_result": {
+        "ok": true
+      },
+      "error": "",
+      "latency_ms": 0,
+      "metadata": {}
+    },
+    {
+      "index": 4,
+      "kind": "tool_result",
+      "observed_at": "2026-05-10T00:00:04+00:00",
+      "provider": "",
+      "model": "",
+      "message": "",
+      "tool_name": "orchestrate_playbook",
+      "tool_args": {
+        "objective": "test"
+      },
+      "tool_result": {
+        "ok": true
+      },
+      "error": "",
+      "latency_ms": 0,
+      "metadata": {}
+    }
+  ],
+  "final_response": "FINAL ANSWER: completed",
+  "final_result": {
+    "iterations": 4,
+    "leads_saved": 1
+  },
+  "errors": [],
+  "evaluation": {
+    "leads_saved": 1,
+    "iterations": 4
+  }
+}

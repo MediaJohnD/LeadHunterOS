@@ -3,9 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 import sys
+from pathlib import Path
 
 sys.path.insert(0, "v2")
-from agent.trajectory import TrajectoryRecorder, diff_trajectories, load_trajectory
+from agent.trajectory import TrajectoryRecorder, diff_trajectories, load_trajectory, replay_summary
 
 
 class TrajectoryTests(unittest.TestCase):
@@ -37,6 +38,23 @@ class TrajectoryTests(unittest.TestCase):
             d = diff_trajectories(run1, run2)
             self.assertTrue(d["tool_sequence_changed"])
             self.assertTrue(d["final_response_changed"])
+
+    def test_golden_trajectory_regression(self) -> None:
+        fixture = Path("v2/tests/fixtures/golden_trajectory_minimal.json")
+        run = load_trajectory(str(fixture))
+        summary = replay_summary(str(fixture))
+
+        self.assertEqual(run.run_id, "golden-run-001")
+        self.assertEqual(run.context.get("max_iterations"), 15)
+        self.assertEqual(summary["steps"], 4)
+        self.assertEqual(summary["providers"], ["local"])
+        self.assertEqual(
+            summary["tools"],
+            ["search_signals", "rank_leads", "orchestrate_playbook"],
+        )
+        self.assertEqual(summary["errors"], [])
+        self.assertEqual(summary["evaluation"].get("leads_saved"), 1)
+        self.assertIn("FINAL ANSWER:", run.final_response)
 
 
 if __name__ == "__main__":

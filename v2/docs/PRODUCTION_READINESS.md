@@ -85,3 +85,36 @@ Gate sequence:
 4. End-to-end eval harness
 
 Any failure blocks the pipeline.
+
+## 6) Live Provider Smoke Lane
+
+Workflow:
+
+- `.github/workflows/live-provider-smoke.yml`
+
+This lane is manual by design (`workflow_dispatch`) so operators can run real-provider checks on demand without adding unstable external dependency risk to every PR.
+
+### Required GitHub repository secrets
+
+- `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `PERPLEXITY_API_KEY`
+
+### Run locally
+
+```powershell
+python v2/scripts/live_provider_smoke.py
+```
+
+Optional provider subset:
+
+```powershell
+$env:SMOKE_PROVIDERS="openai,claude"
+python v2/scripts/live_provider_smoke.py
+```
+
+### Pass/fail behavior
+
+- `SKIP`: provider not configured locally.
+- `PASS`: provider answered minimal deterministic prompt.
+- `FAIL`: provider configured but unavailable, malformed response, or normalized adapter error.
