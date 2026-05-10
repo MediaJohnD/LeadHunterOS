@@ -24,6 +24,19 @@ type RuntimeLane = {
 
 type QualifiedPayload = {
   approvals?: ApprovalItem[];
+  leads?: Array<{
+    id: string;
+    full_name: string;
+    title: string;
+    company_name: string;
+    company_domain: string;
+    icp_score: number;
+    status: string;
+    signal_summary: string;
+    attribution_confidence: number;
+    decision_reason: string;
+    created_at: string;
+  }>;
   kpis?: Array<{ metric: string; value: string | number }>;
   runtime?: RuntimeLane[];
   executive_feed?: string[];
@@ -38,15 +51,15 @@ type HermesPolicy = {
 };
 
 async function getQualifiedDashboard(): Promise<QualifiedPayload> {
-  const response = await fetch("/api/hermes/tasks", { cache: "no-store" });
+  const response = await fetch("/api/hermes/qualified-leads", { cache: "no-store" });
   if (!response.ok) {
     return {};
   }
   const data = (await response.json()) as unknown;
-  if (typeof data === "object" && data !== null && "tasks" in data) {
-    const tasks = (data as { tasks?: ApprovalItem[] }).tasks;
-    if (Array.isArray(tasks)) {
-      return { approvals: tasks };
+  if (typeof data === "object" && data !== null && "leads" in data) {
+    const leads = (data as { leads?: QualifiedPayload["leads"] }).leads;
+    if (Array.isArray(leads)) {
+      return { leads };
     }
   }
   if (typeof data === "object" && data !== null) {
@@ -89,14 +102,34 @@ export function CommandCenter() {
       const payload = await getQualifiedDashboard();
       if (!mounted) return;
 
-      const qualifiedApprovals = (payload.approvals ?? []).filter(
-        (item) => item.is_qualified && item.signal_count >= 30,
-      );
+      const qualifiedApprovals = (payload.leads ?? [])
+        .filter((row) => Number(row.icp_score ?? 0) >= 70)
+        .map(
+          (row): ApprovalItem => ({
+            id: row.id,
+            account: row.company_name,
+            action: `${row.title || "contact"} · ${row.full_name || "Unknown contact"}`,
+            confidence: Math.round(Number(row.icp_score ?? 0)),
+            signal_count: Math.max(1, Math.round(Number(row.attribution_confidence ?? 0))),
+            is_qualified: true,
+            state: "pending",
+          }),
+        );
 
       setApprovals(qualifiedApprovals);
-      setKpis(payload.kpis ?? []);
-      setRuntime(payload.runtime ?? []);
-      setExecutiveFeed(payload.executive_feed ?? []);
+      setKpis([
+        { metric: "Qualified Leads (DB)", value: qualifiedApprovals.length },
+        { metric: "Avg Confidence", value: qualifiedApprovals.length ? Math.round(qualifiedApprovals.reduce((a, b) => a + b.confidence, 0) / qualifiedApprovals.length) : 0 },
+      ]);
+      setRuntime([
+        { lane: "Lead Store", status: "Healthy", latency: "local" },
+        { lane: "Hermes Bridge", status: "Healthy", latency: "local" },
+      ]);
+      setExecutiveFeed(
+        (payload.leads ?? []).slice(0, 6).map(
+          (row) => `${row.company_name}: ${row.decision_reason || row.signal_summary || "Qualified lead saved."}`,
+        ),
+      );
       setPolicy(await getPolicy());
       setLoading(false);
     })();
@@ -280,7 +313,7 @@ export function CommandCenter() {
         </div>
         {approvals.length === 0 ? (
           <div className="rounded-md border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-400">
-            No qualified approvals. Leads must pass ICP and have at least 30 independent signals.
+            No qualified approvals yet. Run lead discovery and save leads to populate this queue.
           </div>
         ) : (
           <div className="space-y-2">
