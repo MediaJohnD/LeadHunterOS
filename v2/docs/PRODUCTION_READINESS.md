@@ -118,3 +118,17 @@ python v2/scripts/live_provider_smoke.py
 - `SKIP`: provider not configured locally.
 - `PASS`: provider answered minimal deterministic prompt.
 - `FAIL`: provider configured but unavailable, malformed response, or normalized adapter error.
+
+## 7) Operator Quickstart (PowerShell)
+
+```powershell
+cd "C:\Windows\System32\LeadHunterOS"
+git pull --ff-only origin main
+cd "C:\Windows\System32\LeadHunterOS\v2"
+python -m py_compile config.py run_agent.py agent\hermes_agent.py agent\llm_router.py agent\tools.py
+python -m unittest discover -s tests -p "test_*.py" -q
+python evals\harness.py
+python scripts\live_provider_smoke.py
+python run_agent.py --status
+python run_agent.py --timeline --objective "Find high-fit US SMB leads with strong ICP + intent signals; score and rank top 3."
+```

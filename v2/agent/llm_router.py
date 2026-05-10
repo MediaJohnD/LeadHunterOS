@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import time
 from typing import Any
 
 from loguru import logger
@@ -64,67 +65,76 @@ class LLMRouter:
             adapter = self.adapters.get(backend)
             if adapter is None or backend not in self.available_backends:
                 continue
-            try:
-                telemetry.emit(
-                    "llm.provider.attempt",
-                    trace_id=trace_id,
-                    correlation_id=correlation_id,
-                    provider=backend,
-                    model=adapter.default_model(),
-                )
-                response = adapter.complete(req)
-                telemetry.emit(
-                    "llm.provider.success",
-                    trace_id=trace_id,
-                    correlation_id=correlation_id,
-                    provider=backend,
-                    model=response.model,
-                    latency_ms=response.latency_ms,
-                    finish_reason=response.finish_reason,
-                    usage=response.usage,
-                )
-                return {
-                    "content": response.content,
-                    "backend": backend,
-                    "model": response.model,
-                    "latency_ms": response.latency_ms,
-                    "usage": response.usage,
-                    "finish_reason": response.finish_reason,
-                }
-            except LLMProviderError as exc:
-                last_error = exc
-                telemetry.emit(
-                    "llm.provider.error",
-                    level="WARNING",
-                    trace_id=trace_id,
-                    correlation_id=correlation_id,
-                    provider=backend,
-                    error_kind=exc.kind.value,
-                    retryable=exc.retryable,
-                    status_code=exc.status_code,
-                    message=exc.message,
-                )
-                logger.warning(f"Backend {backend} failed: {exc}")
-                continue
-            except Exception as exc:  # pragma: no cover
-                last_error = LLMProviderError(
-                    provider_name=backend,
-                    kind=LLMProviderErrorKind.UNKNOWN,
-                    message=str(exc),
-                    retryable=False,
-                )
-                telemetry.emit(
-                    "llm.provider.error",
-                    level="WARNING",
-                    trace_id=trace_id,
-                    correlation_id=correlation_id,
-                    provider=backend,
-                    error_kind="unknown",
-                    retryable=False,
-                    message=str(exc),
-                )
-                logger.warning(f"Backend {backend} failed: {exc}")
-                continue
+            max_attempts = max(1, int(getattr(config, "ROUTER_RETRYABLE_ATTEMPTS", 1)))
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    telemetry.emit(
+                        "llm.provider.attempt",
+                        trace_id=trace_id,
+                        correlation_id=correlation_id,
+                        provider=backend,
+                        model=adapter.default_model(),
+                        attempt=attempt,
+                    )
+                    response = adapter.complete(req)
+                    telemetry.emit(
+                        "llm.provider.success",
+                        trace_id=trace_id,
+                        correlation_id=correlation_id,
+                        provider=backend,
+                        model=response.model,
+                        latency_ms=response.latency_ms,
+                        finish_reason=response.finish_reason,
+                        usage=response.usage,
+                        attempt=attempt,
+                    )
+                    return {
+                        "content": response.content,
+                        "backend": backend,
+                        "model": response.model,
+                        "latency_ms": response.latency_ms,
+                        "usage": response.usage,
+                        "finish_reason": response.finish_reason,
+                    }
+                except LLMProviderError as exc:
+                    last_error = exc
+                    telemetry.emit(
+                        "llm.provider.error",
+                        level="WARNING",
+                        trace_id=trace_id,
+                        correlation_id=correlation_id,
+                        provider=backend,
+                        error_kind=exc.kind.value,
+                        retryable=exc.retryable,
+                        status_code=exc.status_code,
+                        message=exc.message,
+                        attempt=attempt,
+                    )
+                    logger.warning(f"Backend {backend} failed (attempt {attempt}/{max_attempts}): {exc}")
+                    if exc.retryable and attempt < max_attempts:
+                        time.sleep(max(0, getattr(config, "ROUTER_RETRY_BACKOFF_MS", 300)) / 1000.0)
+                        continue
+                    break
+                except Exception as exc:  # pragma: no cover
+                    last_error = LLMProviderError(
+                        provider_name=backend,
+                        kind=LLMProviderErrorKind.UNKNOWN,
+                        message=str(exc),
+                        retryable=False,
+                    )
+                    telemetry.emit(
+                        "llm.provider.error",
+                        level="WARNING",
+                        trace_id=trace_id,
+                        correlation_id=correlation_id,
+                        provider=backend,
+                        error_kind="unknown",
+                        retryable=False,
+                        message=str(exc),
+                        attempt=attempt,
+                    )
+                    logger.warning(f"Backend {backend} failed (attempt {attempt}/{max_attempts}): {exc}")
+                    break
 
         detail = str(last_error) if last_error else "no available providers"
         telemetry.emit(

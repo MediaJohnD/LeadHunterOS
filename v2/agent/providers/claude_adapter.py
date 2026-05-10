@@ -44,7 +44,10 @@ class ClaudeAdapter(LLMProviderAdapter):
                 retryable=False,
             )
         try:
-            client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+            client = anthropic.Anthropic(
+                api_key=config.ANTHROPIC_API_KEY,
+                timeout=max(30, int(getattr(config, "CLOUD_LLM_TIMEOUT_SECONDS", 120))),
+            )
             system_msg = ""
             user_messages: list[dict[str, Any]] = []
             for msg in request.messages:

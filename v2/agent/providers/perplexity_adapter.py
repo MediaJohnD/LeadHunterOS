@@ -51,7 +51,7 @@ class PerplexityAdapter(LLMProviderAdapter):
                     "Authorization": f"Bearer {config.PERPLEXITY_API_KEY}",
                     "Content-Type": "application/json",
                 },
-                timeout=120,
+                timeout=max(30, int(getattr(config, "CLOUD_LLM_TIMEOUT_SECONDS", 120))),
             )
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
