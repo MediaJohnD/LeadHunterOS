@@ -480,6 +480,22 @@ TOOLS: list[dict[str, Any]] = [
         }
     },
     {
+        "name": "commercial_signal_intelligence",
+        "description": "Score 10 hidden commercial buying dimensions from public evidence with source-backed confidence.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "company": {"type": "string"},
+                "industry": {"type": "string"},
+                "company_size": {"type": "integer"},
+                "signals": {"type": "array", "items": {"type": "string"}},
+                "source_type": {"type": "string"},
+                "source_url": {"type": "string"}
+            },
+            "required": ["company", "signals"]
+        }
+    },
+    {
         "name": "rank_leads",
         "description": "Deduplicate and rank lead candidates using evidence-weighted ICP scoring.",
         "parameters": {
@@ -767,6 +783,39 @@ _CANONICAL_SIGNAL_ONTOLOGY: dict[str, tuple[str, ...]] = {
     "marketplace_launch": ("product hunt", "marketplace listing"),
     "remote_hiring_signal": ("remote role", "distributed hiring"),
     "compliance_deadline": ("deadline", "regulatory requirement"),
+}
+
+_COMMERCIAL_DIMENSIONS: dict[str, tuple[str, ...]] = {
+    "budget_confidence": (
+        "funding", "hiring", "vp", "director", "paid media", "ad spend", "expansion", "new office", "rfp"
+    ),
+    "urgency_level": (
+        "urgent", "immediate", "deadline", "backlog", "response delay", "pipeline leak", "incident", "outage", "migration"
+    ),
+    "internal_politics_risk": (
+        "reorg", "new executive", "mandate", "ownership", "cross-functional", "stakeholder", "alignment", "conflict"
+    ),
+    "procurement_complexity": (
+        "security review", "vendor review", "soc2", "compliance", "legal", "procurement", "infosec", "msa", "rfp"
+    ),
+    "vendor_lockin_risk": (
+        "incumbent", "legacy", "salesforce", "hubspot", "integration", "switching", "contract", "renewal"
+    ),
+    "board_pressure_signal": (
+        "efficiency", "profitability", "burn", "investor", "board", "cost reduction", "growth target", "series"
+    ),
+    "operational_maturity": (
+        "revops", "data ops", "playbook", "automation", "sla", "process", "dashboard", "forecasting"
+    ),
+    "strategic_alignment": (
+        "expansion", "go-to-market", "customer acquisition", "operational efficiency", "scale", "launch"
+    ),
+    "buying_committee_clarity": (
+        "operations manager", "revops", "vp sales", "finance", "it manager", "procurement", "security", "legal ops"
+    ),
+    "implementation_readiness": (
+        "implementation", "integration", "api", "onboarding", "solutions engineer", "project manager", "migration plan"
+    ),
 }
 
 
@@ -1403,6 +1452,16 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
         "ok": True,
         "query": scoped,
         "waterfall_applied": True,
+        "waterfall_rank": [
+            "google_xray_linkedin",
+            "crunchbase_public",
+            "jobs_velocity",
+            "news",
+            "reddit",
+            "github",
+            "duckduckgo",
+        ],
+        "no_paid_sources_used": True,
         "count": len(final_results),
         "providers_used": providers,
         "canonical_tags": _canonicalize_signal_tags([json.dumps(item, default=str) for item in final_results]),
@@ -1582,9 +1641,10 @@ def _search_form_d_georgia(days_back: int = 90, limit: int = 10) -> dict[str, An
     return {"ok": True, "results": _slice_results(results, limit)}
 
 
-def _search_jobs_public(query: str, location: str = "", days_back: int = 30, limit: int = 10) -> dict[str, Any]:
+def _search_jobs_public(query: str = "", location: str = "", days_back: int = 30, limit: int = 10) -> dict[str, Any]:
     if search_jobs is None:
         return {"ok": False, "error": "search_jobs is not available"}
+    query = (query or "").strip() or "US SMB operations manager"
     # search_jobs takes job_titles: list[str], hours_old: int (not days_back)
     job_titles = _normalize_job_titles(query)
     results = search_jobs(
@@ -1842,23 +1902,25 @@ def _search_glassdoor_signals(query: str, limit: int = 15) -> dict[str, Any]:
 # See audit notes for full httpx implementation.
 
 def _search_apollo(
-    job_titles: list[str],
+    job_titles: list[str] | None = None,
     industries: list[str] | None = None,
     employee_range: str = "",
     keywords: str = "",
     limit: int = 10,
 ) -> dict[str, Any]:
+    resolved_job_titles = [title for title in (job_titles or _DEFAULT_JOB_TITLES) if str(title).strip()]
     if not getattr(config, "APOLLO_API_KEY", "").strip():
         return {
             "ok": False,
             "error": "apollo_not_configured",
             "note": "Set APOLLO_API_KEY to enable this provider.",
+            "job_titles": resolved_job_titles,
         }
     return {
         "ok": False,
         "error": "apollo_provider_not_implemented",
         "note": "Provider adapter required; placeholder disabled to prevent false positives.",
-        "job_titles": job_titles,
+        "job_titles": resolved_job_titles,
         "industries": industries or [],
         "employee_range": employee_range,
         "keywords": keywords,
@@ -1944,6 +2006,12 @@ def _score_lead(
         industry=industry,
         signals=normalized_signals,
     )
+    commercial = _commercial_signal_intelligence(
+        company=company,
+        industry=industry,
+        company_size=normalized_company_size,
+        signals=normalized_signals,
+    )
     score = _composite_icp_score(components)
     return {
         "ok": True,
@@ -1957,6 +2025,9 @@ def _score_lead(
         "attraction_score": components["attraction_score"],
         "zero_defect_score": components["zero_defect_score"],
         "evidence_score": components["evidence_score"],
+        "commercial_intelligence": commercial.get("commercial_intelligence", {}),
+        "buying_readiness_score": commercial.get("buying_readiness_score", 0),
+        "commercial_confidence_score": commercial.get("confidence_score", 0),
         "reasoning": {
             "title": title,
             "industry": industry,
@@ -1964,6 +2035,62 @@ def _score_lead(
             "signals_count": len(normalized_signals),
             "signals": normalized_signals,
         },
+    }
+
+
+def _commercial_signal_intelligence(
+    company: str,
+    signals: list[str],
+    industry: str = "",
+    company_size: int | None = None,
+    source_type: str = "",
+    source_url: str = "",
+) -> dict[str, Any]:
+    normalized_signals = _normalize_signals_payload(signals)
+    signal_blob = " ".join(str(item).lower() for item in normalized_signals)
+    source_set = _signal_source_set(normalized_signals, source_type=source_type, source_url=source_url)
+    source_bonus = min(20, max(0, len(source_set) - 1) * 4)
+    size_bonus = 6 if (company_size is not None and company_size >= 20) else 0
+    target_industries = [token.strip().lower() for token in str(getattr(config, "ICP_TARGET_INDUSTRIES", "")).split(",") if token.strip()]
+    industry_lower = industry.strip().lower()
+    industry_bonus = 5 if any(token in industry_lower for token in target_industries) else 0
+
+    dimension_scores: dict[str, dict[str, Any]] = {}
+    weighted_sum = 0
+    weighted_den = 0
+
+    for dimension, keywords in _COMMERCIAL_DIMENSIONS.items():
+        hits = [kw for kw in keywords if kw in signal_blob]
+        base = min(70, len(hits) * 12)
+        score = max(0, min(100, base + source_bonus + size_bonus + industry_bonus))
+        confidence = max(20, min(100, 25 + len(hits) * 12 + source_bonus))
+        dimension_scores[dimension] = {
+            "score": score,
+            "confidence": confidence,
+            "evidence": hits[:6],
+        }
+        weighted_sum += score * confidence
+        weighted_den += confidence
+
+    buying_readiness = int(weighted_sum / weighted_den) if weighted_den else 0
+    confidence_score = int(sum(v["confidence"] for v in dimension_scores.values()) / max(1, len(dimension_scores)))
+    top_dimensions = sorted(
+        (
+            {"dimension": k, "score": v["score"], "confidence": v["confidence"], "evidence": v["evidence"]}
+            for k, v in dimension_scores.items()
+        ),
+        key=lambda item: (item["score"], item["confidence"]),
+        reverse=True,
+    )[:4]
+    return {
+        "ok": True,
+        "company": company,
+        "signals_evaluated": len(normalized_signals),
+        "distinct_sources": sorted(source_set),
+        "commercial_intelligence": dimension_scores,
+        "buying_readiness_score": buying_readiness,
+        "confidence_score": confidence_score,
+        "top_drivers": top_dimensions,
     }
 
 
@@ -2236,6 +2363,7 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         "enrich_apollo": _enrich_apollo,
         "find_email_hunter": _find_email_hunter,
         "score_lead": _score_lead,
+        "commercial_signal_intelligence": _commercial_signal_intelligence,
         "rank_leads": _rank_leads,
         "recommend_playbook_actions": _recommend_playbook_actions,
         "orchestrate_playbook": _orchestrate_playbook,

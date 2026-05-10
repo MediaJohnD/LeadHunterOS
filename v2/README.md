@@ -12,6 +12,8 @@
 - Enrichment waterfall with provenance, confidence, and contact tiers.
 - Entity graph, attribution fields, and operator suppression controls.
 - Self-healing runtime behavior with health ledger and outcome learning.
+- Beat-the-field release gate with stress/replay scoreboard (`v2/evals/beat_field_scoreboard.json`).
+- Commercial evidence matrix for hidden buying dynamics (`v2/docs/COMMERCIAL_EVIDENCE_MATRIX.md`).
 
 ---
 
@@ -169,6 +171,14 @@ python run_agent.py --llm claude --objective "Deep research: Find Series A SaaS 
 python run_agent.py --llm perplexity --objective "Find companies that just announced AI sales initiatives"
 ```
 
+### 5. Run beat-the-field gate
+
+```bash
+python v2/scripts/run_beat_field_gate.py
+```
+
+Release requires `release_green=true` in `v2/evals/beat_field_scoreboard.json`.
+
 ---
 
 ## Folder Structure
@@ -186,6 +196,7 @@ v2/
   requirements.txt
   docker-compose.yml
   .env.example
+  docs/BEAT_FIELD_MATRIX.md
 ```
 
 ---
