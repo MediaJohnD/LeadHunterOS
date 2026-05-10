@@ -1,0 +1,87 @@
+# Hermes Agent Production Readiness
+
+This document defines how to evaluate, replay, tune, and observe Hermes Agent.
+
+## 1) Eval and Regression Gates
+
+### Run unit + scenario evals
+
+```powershell
+python -m unittest discover -s v2/tests -p "test_*.py" -q
+python v2/evals/harness.py
+```
+
+### What the eval harness checks
+
+- Tool-call happy path (`search_signals -> rank_leads -> orchestrate_playbook -> FINAL ANSWER`)
+- Malformed tool-call recovery
+- Safety boundary handling (placeholder lead blocking)
+- Machine-checkable pass/fail assertions per fixture
+
+Fixtures live in `v2/evals/fixtures/*.json`.
+
+## 2) Provider Adapter Model
+
+Adapters live in `v2/agent/providers`.
+
+Each adapter implements:
+
+- `is_configured()`
+- `detect_available()`
+- `capabilities()`
+- `default_model()`
+- `complete(request)`
+
+Errors are normalized through `LLMProviderError` with:
+
+- `kind`: auth/rate_limit/timeout/network/bad_request/server/unavailable/parse/unknown
+- `retryable`: true/false
+- `status_code`
+
+## 3) Trajectory Replay and Tuning
+
+### Trajectory capture
+
+Trajectories are written to `v2/trajectories/*.json` when `TRAJECTORY_ENABLED=true` (default).
+
+### Replay and diff
+
+```powershell
+python v2/scripts/replay_trajectory.py --path v2/trajectories/<file>.json
+python v2/scripts/replay_trajectory.py --path old.json --compare new.json
+```
+
+### Tuning experiments (explicit and reversible)
+
+```powershell
+python v2/scripts/tuning_experiments.py
+```
+
+Outputs `v2/evals/experiment_results.json`.
+
+## 4) Observability
+
+Telemetry events are written to `telemetry.jsonl`.
+
+Environment controls:
+
+- `TELEMETRY_ENABLED=true|false`
+- `TELEMETRY_REDACT=true|false`
+- `TELEMETRY_SAMPLE_RATE=0.0-1.0`
+
+Prometheus-ready metrics are exposed from telemetry via `export_prometheus()`.
+
+## 5) CI Regression Gate
+
+GitHub Actions workflow:
+
+- `.github/workflows/hermes-regression.yml`
+
+Gate sequence:
+
+1. Install dependencies
+2. Compile check
+3. Unit tests
+4. End-to-end eval harness
+
+Any failure blocks the pipeline.

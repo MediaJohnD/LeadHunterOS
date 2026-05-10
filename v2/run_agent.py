@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from loguru import logger
 
 import config
+from agent.trajectory import load_trajectory, replay_summary
 from agent.hermes_agent import HermesAgent
 from agent.database import export_latest_leads_csv
 
@@ -32,7 +33,54 @@ DEFAULT_OBJECTIVE = (
 )
 
 
-def run_once(objective: str, llm_backend: str | None = None) -> None:
+def _print_timeline(result: dict) -> None:
+    timeline = result.get("timeline", [])
+    if not timeline:
+        print("\nTimeline: no events recorded.\n")
+        return
+    print("\n=== Run Timeline ===")
+    for event in timeline:
+        iteration = event.get("iteration", 0)
+        name = event.get("event", "event")
+        if name == "provider_response":
+            print(
+                f"  i{iteration} provider={event.get('provider')} "
+                f"model={event.get('model')} latency_ms={event.get('latency_ms')}"
+            )
+        elif name == "tool_called":
+            print(f"  i{iteration} tool={event.get('tool_name')}")
+        elif name == "gate_block":
+            print(f"  i{iteration} gate={event.get('kind')} reason={event.get('reason')}")
+        else:
+            print(f"  i{iteration} {name}")
+    print("====================\n")
+
+
+def show_replay(path: str) -> None:
+    summary = replay_summary(path)
+    run = load_trajectory(path)
+    print("\n=== Trajectory Replay ===")
+    print(f"Run ID:      {summary['run_id']}")
+    print(f"Objective:   {summary['objective']}")
+    print(f"Steps:       {summary['steps']}")
+    print(f"Providers:   {summary['providers']}")
+    print(f"Tools:       {summary['tools']}")
+    print(f"Errors:      {summary['errors']}")
+    print(f"Evaluation:  {summary['evaluation']}")
+    print("\nStep Trace:")
+    for step in run.steps:
+        label = step.kind
+        if step.tool_name:
+            label += f" tool={step.tool_name}"
+        if step.provider:
+            label += f" provider={step.provider}"
+        if step.latency_ms:
+            label += f" latency_ms={step.latency_ms}"
+        print(f"  {step.index:02d}. {label}")
+    print("=========================\n")
+
+
+def run_once(objective: str, llm_backend: str | None = None, print_timeline: bool = False) -> None:
     """Run one agent cycle."""
     logger.info(f"Starting LeadHunterOS agent cycle | {datetime.now(timezone.utc).isoformat()}")
     logger.info(f"Objective: {objective[:120]}..." if len(objective) > 120 else f"Objective: {objective}")
@@ -41,6 +89,8 @@ def run_once(objective: str, llm_backend: str | None = None) -> None:
         agent = HermesAgent(preferred_backend=llm_backend)
         result = agent.run(objective)
         logger.success(f"Agent cycle complete. Result preview: {str(result)[:300]}")
+        if print_timeline:
+            _print_timeline(result)
         if config.EXPORT_LEADS_TO_CSV:
             export = export_latest_leads_csv(config.LEADS_CSV_PATH, limit=config.LEAD_MAX_RESULTS)
             logger.info(f"CSV export complete: {export['path']} ({export['rows']} rows)")
@@ -49,7 +99,12 @@ def run_once(objective: str, llm_backend: str | None = None) -> None:
         raise
 
 
-def run_scheduled(objective: str, interval_minutes: int, llm_backend: str | None = None) -> None:
+def run_scheduled(
+    objective: str,
+    interval_minutes: int,
+    llm_backend: str | None = None,
+    print_timeline: bool = False,
+) -> None:
     """Run agent on a repeating schedule using stdlib time.sleep().
 
     No apscheduler or external dependencies needed.
@@ -58,7 +113,7 @@ def run_scheduled(objective: str, interval_minutes: int, llm_backend: str | None
     logger.info(f"Scheduled mode: running every {interval_minutes} minutes. Press Ctrl+C to stop.")
 
     # Run immediately on first start
-    run_once(objective, llm_backend=llm_backend)
+    run_once(objective, llm_backend=llm_backend, print_timeline=print_timeline)
 
     while True:
         next_run = datetime.now(timezone.utc)
@@ -69,7 +124,7 @@ def run_scheduled(objective: str, interval_minutes: int, llm_backend: str | None
         except KeyboardInterrupt:
             logger.info("Scheduled run interrupted by user. Exiting.")
             sys.exit(0)
-        run_once(objective, llm_backend=llm_backend)
+        run_once(objective, llm_backend=llm_backend, print_timeline=print_timeline)
 
 
 def show_status() -> None:
@@ -128,6 +183,17 @@ def main() -> None:
         default=None,
         help="Preferred LLM backend for this run",
     )
+    parser.add_argument(
+        "--timeline",
+        action="store_true",
+        help="Print a human-readable run timeline after execution",
+    )
+    parser.add_argument(
+        "--replay",
+        type=str,
+        default="",
+        help="Path to a saved trajectory JSON to replay and inspect",
+    )
     args = parser.parse_args()
 
     # Configure logger
@@ -147,11 +213,14 @@ def main() -> None:
     if args.status:
         show_status()
         sys.exit(0)
+    if args.replay:
+        show_replay(args.replay)
+        sys.exit(0)
 
     if args.schedule:
-        run_scheduled(args.objective, args.interval, llm_backend=args.llm)
+        run_scheduled(args.objective, args.interval, llm_backend=args.llm, print_timeline=args.timeline)
     else:
-        run_once(args.objective, llm_backend=args.llm)
+        run_once(args.objective, llm_backend=args.llm, print_timeline=args.timeline)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,16 @@
+{
+  "name": "user_control_no_progress_nudge",
+  "objective": "Analyze leads.",
+  "provider_responses": [
+    "Thinking...",
+    "Still thinking...",
+    "<tool_call>{\"name\":\"search_signals\",\"arguments\":{\"query\":\"US SMB\",\"limit\":1}}</tool_call>",
+    "<tool_call>{\"name\":\"rank_leads\",\"arguments\":{\"leads\":[],\"top_n\":1}}</tool_call>",
+    "<tool_call>{\"name\":\"orchestrate_playbook\",\"arguments\":{\"objective\":\"test\",\"leads\":[]}}</tool_call>",
+    "FINAL ANSWER: no progress recovered via nudge."
+  ],
+  "assertions": {
+    "expect_final_answer": true,
+    "max_iterations": 8
+  }
+}

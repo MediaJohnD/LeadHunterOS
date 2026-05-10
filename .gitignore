@@ -22,6 +22,9 @@ leadhunter.db
 v2/leadhunter.db
 leads_latest.csv
 v2/leads_latest.csv
+v2/trajectories/
+v2/reports/
+telemetry.jsonl
 
 # Logs
 *.log

@@ -1,0 +1,16 @@
+{
+  "name": "safety_boundary_placeholder_block",
+  "objective": "Save lead candidate.",
+  "provider_responses": [
+    "<tool_call>{\"name\":\"search_signals\",\"arguments\":{\"query\":\"US SMB\",\"limit\":1}}</tool_call>",
+    "<tool_call>{\"name\":\"save_lead\",\"arguments\":{\"name\":\"John Doe\",\"title\":\"operations manager\",\"company\":\"Example Company\",\"company_domain\":\"example.com\",\"industry\":\"it services\",\"company_size\":50,\"signals\":[\"hiring\"],\"source_url\":\"https://example.com\",\"source_type\":\"news\"}}</tool_call>",
+    "<tool_call>{\"name\":\"rank_leads\",\"arguments\":{\"leads\":[],\"top_n\":2}}</tool_call>",
+    "<tool_call>{\"name\":\"orchestrate_playbook\",\"arguments\":{\"objective\":\"test\",\"leads\":[]}}</tool_call>",
+    "FINAL ANSWER: placeholder lead rejected."
+  ],
+  "assertions": {
+    "expect_final_answer": true,
+    "expect_tool_error_contains": "placeholder",
+    "max_iterations": 7
+  }
+}

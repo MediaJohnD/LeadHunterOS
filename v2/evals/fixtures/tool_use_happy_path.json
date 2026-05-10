@@ -1,0 +1,15 @@
+{
+  "name": "tool_use_happy_path",
+  "objective": "Find qualified US SMB leads and save top lead.",
+  "provider_responses": [
+    "<tool_call>{\"name\":\"search_signals\",\"arguments\":{\"query\":\"US SMB hiring expansion\",\"limit\":3}}</tool_call>",
+    "<tool_call>{\"name\":\"rank_leads\",\"arguments\":{\"leads\":[{\"name\":\"Jane Roe\",\"title\":\"operations manager\",\"company\":\"Acme Services\",\"company_domain\":\"acme-services.com\",\"industry\":\"it services\",\"company_size\":50,\"signals\":[\"hiring surge\",\"expansion\"]}],\"top_n\":3}}</tool_call>",
+    "<tool_call>{\"name\":\"orchestrate_playbook\",\"arguments\":{\"objective\":\"test\",\"leads\":[{\"name\":\"Jane Roe\",\"title\":\"operations manager\",\"company\":\"Acme Services\",\"company_domain\":\"acme-services.com\",\"industry\":\"it services\",\"company_size\":50,\"signals\":[\"hiring surge\",\"expansion\"],\"icp_score\":80,\"evidence_score\":70}]}}</tool_call>",
+    "FINAL ANSWER: one qualified lead found and orchestrated for CRM handoff."
+  ],
+  "assertions": {
+    "expect_final_answer": true,
+    "expect_tools_seen": ["search_signals", "rank_leads", "orchestrate_playbook"],
+    "max_iterations": 6
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "title": "Hermes Agent Overview",
+  "tags": ["hermes", "agent", "ops"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "LLM Provider Attempts",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "hermes_events_total{event=\"llm.provider.attempt\"}",
+          "legendFormat": "attempts"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM Provider Errors",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "hermes_events_total{event=\"llm.provider.error\"}",
+          "legendFormat": "errors"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool Results",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "hermes_events_total{event=\"agent.tool.result\"}",
+          "legendFormat": "tool_result"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Average Provider Latency (ms)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "hermes_event_latency_ms_avg{event=\"llm.provider.success\"}",
+          "legendFormat": "avg_ms"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Completed Runs",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "hermes_events_total{event=\"agent.run.complete\"}",
+          "legendFormat": "runs"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Route Failures",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 16},
+      "targets": [
+        {
+          "expr": "hermes_events_total{event=\"llm.route.failed\"}",
+          "legendFormat": "route_failed"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "No-Progress Nudges",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 16},
+      "targets": [
+        {
+          "expr": "hermes_events_total{event=\"agent.iteration.no_progress\"}",
+          "legendFormat": "nudges"
+        }
+      ]
+    }
+  ]
+}
+

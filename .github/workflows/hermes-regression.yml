@@ -1,0 +1,29 @@
+name: Hermes Regression
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r v2/requirements.txt
+      - name: Compile
+        run: |
+          python -m py_compile v2/config.py v2/run_agent.py v2/agent/hermes_agent.py v2/agent/llm_router.py v2/agent/tools.py v2/agent/database.py
+      - name: Unit tests
+        run: |
+          python -m unittest discover -s v2/tests -p "test_*.py" -q
+      - name: Eval regression gate
+        run: |
+          python v2/evals/harness.py

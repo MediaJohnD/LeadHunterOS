@@ -1,0 +1,16 @@
+{
+  "name": "malformed_tool_call_recovery",
+  "objective": "Run discovery and ranking.",
+  "provider_responses": [
+    "<tool_call>{\"name\":\"search_signals\",\"arguments\":{\"query\":\"US SMB\"}</tool_call>",
+    "<tool_call>{\"name\":\"search_signals\",\"arguments\":{\"query\":\"US SMB\",\"limit\":2}}</tool_call>",
+    "<tool_call>{\"name\":\"rank_leads\",\"arguments\":{\"leads\":[],\"top_n\":2}}</tool_call>",
+    "<tool_call>{\"name\":\"orchestrate_playbook\",\"arguments\":{\"objective\":\"test\",\"leads\":[]}}</tool_call>",
+    "FINAL ANSWER: no qualified leads; blockers listed."
+  ],
+  "assertions": {
+    "expect_final_answer": true,
+    "expect_parse_error_recovery": true,
+    "max_iterations": 7
+  }
+}

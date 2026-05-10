@@ -1,0 +1,15 @@
+{
+  "name": "partial_completion_timeout",
+  "objective": "Find leads quickly.",
+  "provider_behaviors": [
+    {"provider": "local", "response": "<tool_call>{\"name\":\"search_signals\",\"arguments\":{\"query\":\"US SMB\",\"limit\":2}}</tool_call>"},
+    {"provider": "openai", "response": "<tool_call>{\"name\":\"rank_leads\",\"arguments\":{\"leads\":[],\"top_n\":2}}</tool_call>"},
+    {"provider": "openai", "response": "<tool_call>{\"name\":\"orchestrate_playbook\",\"arguments\":{\"objective\":\"test\",\"leads\":[]}}</tool_call>"},
+    {"provider": "openai", "response": "FINAL ANSWER: partial completion with fallback."}
+  ],
+  "assertions": {
+    "expect_final_answer": true,
+    "expect_fallback_provider": "openai",
+    "max_iterations": 8
+  }
+}

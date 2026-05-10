@@ -13,6 +13,8 @@ from loguru import logger
 import config
 from agent.database import record_tool_health_event
 from agent.llm_router import LLMRouter
+from agent.telemetry import telemetry
+from agent.trajectory import TrajectoryRecorder, env_trajectory_enabled
 from agent.tools import TOOLS, dispatch_tool, get_tool_schema_xml
 
 
@@ -55,10 +57,20 @@ _REQUIRED_PRE_FINAL_TOOLS = {"rank_leads", "orchestrate_playbook"}
 class HermesAgent:
     """True Hermes agent with XML tool-calling and ReAct loop."""
 
-    def __init__(self, preferred_backend: str | None = None) -> None:
-        self.router = LLMRouter(preferred_backend=preferred_backend)
+    def __init__(
+        self,
+        preferred_backend: str | None = None,
+        *,
+        router: LLMRouter | None = None,
+        tool_dispatcher: Any = None,
+    ) -> None:
+        self.router = router or LLMRouter(preferred_backend=preferred_backend)
+        self.tool_dispatcher = tool_dispatcher or dispatch_tool
         self.session_id = str(uuid.uuid4())[:8]
         self.system_prompt = _build_system_prompt()
+        self.trace_id, self.correlation_id = telemetry.new_trace()
+        self.trajectory_recorder = TrajectoryRecorder(directory="v2/trajectories")
+        self.capture_trajectory = env_trajectory_enabled()
         logger.info(
             f"HermesAgent initialized | session={self.session_id} "
             f"| backends={self.router.available_backends} | tools={len(TOOLS)}"
@@ -68,15 +80,32 @@ class HermesAgent:
         """Run the full Hermes ReAct loop for the given objective."""
         logger.info(f"[{self.session_id}] Starting agent run")
         logger.info(f"[{self.session_id}] Objective: {objective[:120]}")
+        telemetry.emit(
+            "agent.run.start",
+            trace_id=self.trace_id,
+            correlation_id=self.correlation_id,
+            session_id=self.session_id,
+            objective=objective[:300],
+        )
 
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": objective},
         ]
+        if self.capture_trajectory:
+            self.trajectory_recorder.start(
+                session_id=self.session_id,
+                objective=objective,
+                trace_id=self.trace_id,
+                correlation_id=self.correlation_id,
+                context={"max_iterations": MAX_ITERATIONS},
+            )
 
         leads_saved: list[dict[str, Any]] = []
         iterations = 0
         last_response: dict[str, Any] = {}
+        gate_reasons: list[str] = []
+        run_timeline: list[dict[str, Any]] = []
         no_progress_turns = 0
         tool_result_cache: dict[str, dict[str, Any]] = {}
         tools_seen: set[str] = set()
@@ -92,6 +121,16 @@ class HermesAgent:
                 response = self.router.route(messages)
             except RuntimeError as exc:
                 logger.error(f"[{self.session_id}] All backends failed: {exc}")
+                telemetry.emit(
+                    "agent.run.error",
+                    level="ERROR",
+                    trace_id=self.trace_id,
+                    correlation_id=self.correlation_id,
+                    session_id=self.session_id,
+                    error=str(exc),
+                )
+                if self.capture_trajectory and self.trajectory_recorder.current:
+                    self.trajectory_recorder.current.errors.append(str(exc))
                 break
 
             last_response = response
@@ -100,12 +139,54 @@ class HermesAgent:
                 f"[{self.session_id}] Response from "
                 f"{response['backend']}/{response['model']} ({len(content)} chars)"
             )
+            telemetry.emit(
+                "agent.iteration.response",
+                trace_id=self.trace_id,
+                correlation_id=self.correlation_id,
+                session_id=self.session_id,
+                iteration=iterations,
+                provider=response.get("backend", ""),
+                model=response.get("model", ""),
+                latency_ms=response.get("latency_ms", 0),
+                content_len=len(content),
+            )
+            run_timeline.append(
+                {
+                    "iteration": iterations,
+                    "event": "provider_response",
+                    "provider": response.get("backend", ""),
+                    "model": response.get("model", ""),
+                    "latency_ms": int(response.get("latency_ms", 0) or 0),
+                    "content_len": len(content),
+                }
+            )
+            if self.capture_trajectory:
+                self.trajectory_recorder.add_step(
+                    kind="provider_response",
+                    provider=response.get("backend", ""),
+                    model=response.get("model", ""),
+                    message=content[:4000],
+                    latency_ms=int(response.get("latency_ms", 0) or 0),
+                )
 
             if "FINAL ANSWER:" in content:
                 has_discovery = bool(tools_seen.intersection(_DISCOVERY_TOOLS))
                 missing_required = sorted(t for t in _REQUIRED_PRE_FINAL_TOOLS if t not in tools_seen)
                 if not has_discovery or missing_required:
                     premature_finalizations += 1
+                    gate_reason = (
+                        "final_answer_blocked:"
+                        f"has_discovery={has_discovery},missing_required={','.join(missing_required) or 'none'}"
+                    )
+                    gate_reasons.append(gate_reason)
+                    run_timeline.append(
+                        {
+                            "iteration": iterations,
+                            "event": "gate_block",
+                            "reason": gate_reason,
+                            "kind": "premature_final_answer",
+                        }
+                    )
                     logger.warning(
                         f"[{self.session_id}] Premature FINAL ANSWER blocked "
                         f"(has_discovery={has_discovery}, missing={missing_required})"
@@ -132,6 +213,19 @@ class HermesAgent:
                     continue
                 messages.append({"role": "assistant", "content": content})
                 logger.success(f"[{self.session_id}] Agent reached final answer")
+                telemetry.emit(
+                    "agent.run.final_answer",
+                    trace_id=self.trace_id,
+                    correlation_id=self.correlation_id,
+                    session_id=self.session_id,
+                    iteration=iterations,
+                )
+                run_timeline.append(
+                    {
+                        "iteration": iterations,
+                        "event": "final_answer",
+                    }
+                )
                 break
 
             tool_calls, parse_errors = self._parse_tool_calls(content)
@@ -139,7 +233,29 @@ class HermesAgent:
             if not tool_calls and not parse_errors:
                 no_progress_turns += 1
                 logger.warning(f"[{self.session_id}] No tool call or final answer. Nudging.")
+                telemetry.emit(
+                    "agent.iteration.no_progress",
+                    level="WARNING",
+                    trace_id=self.trace_id,
+                    correlation_id=self.correlation_id,
+                    session_id=self.session_id,
+                    iteration=iterations,
+                    no_progress_turns=no_progress_turns,
+                )
                 if no_progress_turns >= max(1, int(getattr(config, "AUTO_REPAIR_NO_PROGRESS_LIMIT", 2))):
+                    gate_reason = (
+                        "auto_repair_no_progress:"
+                        f"no_progress_turns={no_progress_turns}"
+                    )
+                    gate_reasons.append(gate_reason)
+                    run_timeline.append(
+                        {
+                            "iteration": iterations,
+                            "event": "gate_block",
+                            "reason": gate_reason,
+                            "kind": "no_progress",
+                        }
+                    )
                     messages.append({
                         "role": "user",
                         "content": (
@@ -174,12 +290,32 @@ class HermesAgent:
                 args_preview = str(tool_args)[:200]
                 logger.info(f"[{self.session_id}] Calling tool: {tool_name}({args_preview})")
                 tools_seen.add(tool_name)
+                run_timeline.append(
+                    {
+                        "iteration": iterations,
+                        "event": "tool_called",
+                        "tool_name": tool_name,
+                    }
+                )
                 repeated_tool_counts[tool_name] = repeated_tool_counts.get(tool_name, 0) + 1
                 last_tool_names.append(tool_name)
                 if len(last_tool_names) > 10:
                     last_tool_names = last_tool_names[-10:]
 
                 if repeated_tool_counts[tool_name] > max(1, int(getattr(config, "AUTO_REPAIR_REPEAT_TOOL_LIMIT", 3))):
+                    gate_reason = (
+                        "auto_repair_repeat_tool:"
+                        f"tool={tool_name},count={repeated_tool_counts[tool_name]}"
+                    )
+                    gate_reasons.append(gate_reason)
+                    run_timeline.append(
+                        {
+                            "iteration": iterations,
+                            "event": "gate_block",
+                            "reason": gate_reason,
+                            "kind": "repeat_tool",
+                        }
+                    )
                     result = {
                         "ok": False,
                         "error": (
@@ -211,9 +347,26 @@ class HermesAgent:
                             result = dict(result)
                             result["cache_hit"] = True
                         else:
-                            result = dispatch_tool(tool_name, tool_args)
+                            result = self.tool_dispatcher(tool_name, tool_args)
                             if cache_key:
                                 tool_result_cache[cache_key] = dict(result)
+                        telemetry.emit(
+                            "agent.tool.result",
+                            trace_id=self.trace_id,
+                            correlation_id=self.correlation_id,
+                            session_id=self.session_id,
+                            iteration=iterations,
+                            tool_name=tool_name,
+                            ok=bool(result.get("ok", False)),
+                            cache_hit=bool(result.get("cache_hit", False)),
+                        )
+                        if self.capture_trajectory:
+                            self.trajectory_recorder.add_step(
+                                kind="tool_result",
+                                tool_name=tool_name,
+                                tool_args=tool_args,
+                                tool_result=self._compact_tool_result(result),
+                            )
                         record_tool_health_event(
                             component="tool_dispatch",
                             tool_name=tool_name,
@@ -226,6 +379,16 @@ class HermesAgent:
                             leads_saved.append(result.get("lead", result))
                     except Exception as exc:
                         result = {"ok": False, "error": str(exc), "tool": tool_name}
+                        telemetry.emit(
+                            "agent.tool.exception",
+                            level="WARNING",
+                            trace_id=self.trace_id,
+                            correlation_id=self.correlation_id,
+                            session_id=self.session_id,
+                            iteration=iterations,
+                            tool_name=tool_name,
+                            error=str(exc),
+                        )
                         record_tool_health_event(
                             component="tool_dispatch",
                             tool_name=tool_name,
@@ -266,8 +429,16 @@ class HermesAgent:
 
         if iterations >= MAX_ITERATIONS:
             logger.warning(f"[{self.session_id}] Hit max iterations ({MAX_ITERATIONS})")
+            telemetry.emit(
+                "agent.run.max_iterations",
+                level="WARNING",
+                trace_id=self.trace_id,
+                correlation_id=self.correlation_id,
+                session_id=self.session_id,
+                max_iterations=MAX_ITERATIONS,
+            )
 
-        return {
+        result_payload = {
             "session_id": self.session_id,
             "objective": objective,
             "iterations": iterations,
@@ -275,8 +446,28 @@ class HermesAgent:
             "leads": leads_saved,
             "backend_used": last_response.get("backend", "none"),
             "model_used": last_response.get("model", "none"),
+            "gate_reasons": gate_reasons,
+            "timeline": run_timeline,
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }
+        if self.capture_trajectory:
+            path = self.trajectory_recorder.finish(
+                final_response=last_response.get("content", ""),
+                final_result=result_payload,
+                evaluation={"leads_saved": len(leads_saved), "iterations": iterations},
+            )
+            result_payload["trajectory_path"] = path
+        telemetry.emit(
+            "agent.run.complete",
+            trace_id=self.trace_id,
+            correlation_id=self.correlation_id,
+            session_id=self.session_id,
+            iterations=iterations,
+            leads_saved=len(leads_saved),
+            backend_used=result_payload["backend_used"],
+            model_used=result_payload["model_used"],
+        )
+        return result_payload
 
     def _parse_tool_calls(self, content: str) -> tuple[list[dict[str, Any]], list[str]]:
         """Extract tool calls and return malformed call errors separately."""

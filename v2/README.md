@@ -221,3 +221,16 @@ See `.env.example`. Key sections:
 - `APOLLO_API_KEY` — Lead enrichment (US)
 - `HUNTER_API_KEY` — Email lookup (US)
 - `DATABASE_URL` — PostgreSQL
+
+## Production Readiness Tooling
+
+- End-to-end eval harness: `python v2/evals/harness.py`
+- Regression gate runner: `python v2/scripts/run_regression_gate.py`
+- Trajectory replay/diff: `python v2/scripts/replay_trajectory.py --path <file> [--compare <file>]`
+- Replay viewer (HTML): `python v2/scripts/render_replay_view.py --path <file> --out v2/reports/replay_view.html`
+- Tuning experiments: `python v2/scripts/tuning_experiments.py`
+- Live provider smoke lane: `python v2/scripts/live_provider_smoke.py`
+- Run-time transparency view: `python v2/run_agent.py --timeline --objective "Find qualified US SMB leads"`
+- Metrics endpoint for dashboards: `python v2/scripts/serve_metrics.py` then scrape `http://localhost:9464/metrics`
+- Ops dashboard pack: [v2/ops/README.md](/D:/Codex/LeadHunterOS-audit/v2/ops/README.md)
+- Detailed guide: [PRODUCTION_READINESS.md](/D:/Codex/LeadHunterOS-audit/v2/docs/PRODUCTION_READINESS.md)
