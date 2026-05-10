@@ -1,4 +1,4 @@
-import AgentTrajectory from "@/v2/brand/components/AgentTrajectory";
+import AgentTrajectory from "@/brand/components/AgentTrajectory";
 
 export default function AgentsPage() {
   return (

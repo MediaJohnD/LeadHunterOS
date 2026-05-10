@@ -44,8 +44,8 @@ Sidebar text:    #F5F4F2
 
 ## Integration
 ```tsx
-import "@/v2/brand/globals.css";
-import AgentTrajectory from "@/v2/brand/components/AgentTrajectory";
+import "@/brand/globals.css";
+import AgentTrajectory from "@/brand/components/AgentTrajectory";
 ```
 
 ## Research-Aligned Validation Checklist
