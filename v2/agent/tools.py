@@ -16,6 +16,9 @@ import json
 import re
 from datetime import datetime, timezone
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote_plus
+from urllib.request import Request, urlopen
 
 from loguru import logger
 
@@ -312,6 +315,18 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "query": {"type": "string"},
                 "limit": {"type": "integer", "description": "Max results to return. Default 20."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "search_duckduckgo_instant",
+        "description": "Search DuckDuckGo Instant Answer API for broad public web snippets and related topics.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max results to return. Default 10."}
             },
             "required": ["query"]
         }
@@ -1299,27 +1314,58 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
     scoped = _normalize_signal_query(query)
     merged: list[Any] = []
     providers: list[str] = []
-    if get_all_signals is not None:
-        results = get_all_signals(keywords=[scoped], daysback=days_back)
-        merged.extend(_slice_results(results, limit))
-        providers.append("all_signals")
+    target = max(1, limit)
+    min_hits = max(3, int(target * 0.9))
+
+    # Ranked waterfall: intent strength > coverage > freshness > ease
+    # 1) Google X-ray (LinkedIn jobs/profiles)
+    xray = _search_google_xray_linkedin(scoped, limit=max(5, target // 2))
+    if xray.get("ok"):
+        merged.extend(_slice_results(xray.get("results", []), target))
+        providers.append("google_xray_linkedin")
+
+    # 2) Crunchbase public
+    if len(merged) < min_hits:
+        cb = _search_crunchbase_news(scoped, limit=max(5, target // 2))
+        if cb.get("ok"):
+            merged.extend(_slice_results(cb.get("results", []), target))
+            providers.append("crunchbase_public")
+
+    # 3) Indeed/Glassdoor signals (jobs + pain)
+    if len(merged) < min_hits:
+        jobs = _search_jobs_public(scoped, location=config.TARGET_COUNTRY, days_back=days_back, limit=max(5, target // 2))
+        if jobs.get("ok"):
+            merged.extend(_slice_results(jobs.get("results", []), target))
+            providers.append("jobs_velocity")
+        gd = _search_glassdoor_signals(scoped, limit=max(3, target // 3))
+        if gd.get("ok"):
+            merged.extend(_slice_results(gd.get("results", []), target))
+            providers.append("glassdoor")
+
+    # 4) News
+    if len(merged) < min_hits:
+        news = _search_news_signals(scoped, days_back=days_back, limit=max(5, target // 2))
+        if news.get("ok"):
+            merged.extend(_slice_results(news.get("results", []), target))
+            providers.append("news")
+
+    # 5) Reddit/GitHub
+    if len(merged) < min_hits:
+        reddit = _search_reddit_signals(scoped, limit=max(5, target // 2))
+        if reddit.get("ok"):
+            merged.extend(_slice_results(reddit.get("results", []), target))
+            providers.append("reddit")
+        gh = _search_github_signals(scoped, limit=max(5, target // 2))
+        if gh.get("ok"):
+            merged.extend(_slice_results(gh.get("results", []), target))
+            providers.append("github")
+
+    # Optional free/no-login broadening only after top 1-5
     if len(merged) < max(1, int(getattr(config, "MIN_DISCOVERY_RESULTS", 8))):
-        for fn_name, fn in [
-            ("news", search_google_news),
-            ("reddit", search_reddit),
-            ("hn", search_hackernews),
-            ("github", search_github_repos),
-            ("producthunt", search_producthunt_launches),
-            ("remoteok", search_remoteok_jobs),
-        ]:
-            if fn is None:
-                continue
-            try:
-                batch = fn(keywords=[scoped], max_results=max(5, limit // 2))
-                merged.extend(_slice_results(batch, max(5, limit // 2)))
-                providers.append(fn_name)
-            except Exception:
-                continue
+        ddg = _search_duckduckgo_instant(scoped, limit=max(5, target // 2))
+        if ddg.get("ok"):
+            merged.extend(_slice_results(ddg.get("results", []), target))
+            providers.append("duckduckgo")
     deduped: list[Any] = []
     seen: set[str] = set()
     for item in merged:
@@ -1339,11 +1385,69 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
     return {
         "ok": True,
         "query": scoped,
+        "waterfall_applied": True,
         "count": len(final_results),
         "providers_used": providers,
         "canonical_tags": _canonicalize_signal_tags([json.dumps(item, default=str) for item in final_results]),
         "results": final_results[:limit],
     }
+
+
+def _search_duckduckgo_instant(query: str, limit: int = 10) -> dict[str, Any]:
+    scoped = _normalize_signal_query(query)
+    url = f"https://api.duckduckgo.com/?q={quote_plus(scoped)}&format=json&no_html=1&skip_disambig=1"
+    req = Request(url, headers={"User-Agent": "LeadHunterOS/2.0"})
+    try:
+        with urlopen(req, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+    except (URLError, HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": f"duckduckgo_unavailable:{exc}"}
+
+    results: list[dict[str, Any]] = []
+    abstract = str(payload.get("AbstractText") or "").strip()
+    heading = str(payload.get("Heading") or "").strip()
+    if abstract:
+        results.append(
+            {
+                "source": "duckduckgo",
+                "title": heading or scoped,
+                "snippet": abstract,
+                "source_url": payload.get("AbstractURL") or "",
+            }
+        )
+    related = payload.get("RelatedTopics", [])
+    if isinstance(related, list):
+        for item in related:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("Text") or "").strip()
+            if not text:
+                continue
+            results.append(
+                {
+                    "source": "duckduckgo",
+                    "title": heading or scoped,
+                    "snippet": text,
+                    "source_url": item.get("FirstURL") or "",
+                }
+            )
+            if len(results) >= max(1, limit):
+                break
+    return {"ok": True, "results": results[: max(1, limit)]}
+
+
+def _search_google_xray_linkedin(query: str, limit: int = 20) -> dict[str, Any]:
+    # No-login X-ray query fan-out via public news index as conservative transport.
+    xray_queries = [
+        f"{query} site:linkedin.com/jobs",
+        f"{query} site:linkedin.com/in",
+    ]
+    merged: list[Any] = []
+    for xq in xray_queries:
+        out = _search_news_signals(query=xq, days_back=30, limit=max(3, limit // 2))
+        if out.get("ok"):
+            merged.extend(_slice_results(out.get("results", []), max(3, limit // 2)))
+    return {"ok": True, "results": merged[: max(1, limit)]}
 
 
 def _search_reddit_signals(query: str, subreddit: str = "", limit: int = 10) -> dict[str, Any]:
@@ -2037,6 +2141,7 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         "search_signals": _search_signals,
         "search_reddit_signals": _search_reddit_signals,
         "search_news_signals": _search_news_signals,
+        "search_duckduckgo_instant": _search_duckduckgo_instant,
         "search_github_signals": _search_github_signals,
         "search_hn_signals": _search_hn_signals,
         "search_producthunt_signals": _search_producthunt_signals,

@@ -78,6 +78,29 @@ It runs on **AMD hardware** using **Lemonade Server v10.3** (AMD's official open
 
 ---
 
+## Free / No-Login Signal Stack Rank (Hermes v2)
+
+Priority order: intent strength > coverage > freshness > ease.  
+Waterfall rule: run ranks 1-5 first (target 90% hit coverage) before optional sources.  
+Policy: no paid APIs until free/no-login sources are exhausted.
+
+| Rank | Source/tool | Status in v2 | Notes |
+|---|---|---|---|
+| 1 | Google X-ray (LinkedIn jobs/profiles) | Implemented (dispatcher layer) | `site:linkedin.com/jobs`, `site:linkedin.com/in` query fan-out |
+| 2 | Crunchbase public | Implemented (news RSS) | Funding/team signal coverage via public feeds |
+| 3 | Indeed/Glassdoor | Implemented (JobSpy + Glassdoor RSS) | Hiring velocity + workplace pain indicators |
+| 4 | NewsAPI / Google News | Partial | Google News implemented; NewsAPI adapter pending |
+| 5 | Reddit / GitHub search | Implemented | Pain + repo momentum signals |
+| 6 | BuiltWith / Wappalyzer | Missing | Planned tech-stack enrichment source |
+| 7 | G2 / Capterra | Missing | Planned review and buyer pain layer |
+| 8 | X/Twitter company posts | Missing | Planned company activity pulse source |
+| 9 | DuckDuckGo Instant API | Implemented | Lightweight broad-web signal recall |
+| 10 | OpenCorporates / YellowPages | Missing | Planned firmographic verification layer |
+
+Composite scoring uses deterministic components (`icp_fit`, `intent_strength`, `recency`, `evidence_confidence`) and blocks low-evidence leads at gate time.
+
+---
+
 ## AMD Hardware Support
 
 Lemonade Server v10.3 auto-detects and routes to best available backend:
