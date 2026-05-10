@@ -40,6 +40,15 @@ Tools:
 MAX_ITERATIONS = config.AGENT_MAX_ITERATIONS
 _VALID_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in TOOLS)
 _MAX_TOOL_CALLS_PER_TURN = 3
+_DISCOVERY_TOOLS = {
+    "search_signals",
+    "search_jobs_public",
+    "search_jobs_by_icp",
+    "search_news_signals",
+    "search_reddit_signals",
+    "search_public_profiles",
+}
+_REQUIRED_PRE_FINAL_TOOLS = {"rank_leads", "orchestrate_playbook"}
 
 
 class HermesAgent:
@@ -69,6 +78,8 @@ class HermesAgent:
         last_response: dict[str, Any] = {}
         no_progress_turns = 0
         tool_result_cache: dict[str, dict[str, Any]] = {}
+        tools_seen: set[str] = set()
+        premature_finalizations = 0
 
         while iterations < MAX_ITERATIONS:
             iterations += 1
@@ -88,6 +99,34 @@ class HermesAgent:
             )
 
             if "FINAL ANSWER:" in content:
+                has_discovery = bool(tools_seen.intersection(_DISCOVERY_TOOLS))
+                missing_required = sorted(t for t in _REQUIRED_PRE_FINAL_TOOLS if t not in tools_seen)
+                if not has_discovery or missing_required:
+                    premature_finalizations += 1
+                    logger.warning(
+                        f"[{self.session_id}] Premature FINAL ANSWER blocked "
+                        f"(has_discovery={has_discovery}, missing={missing_required})"
+                    )
+                    messages.append({"role": "assistant", "content": self._assistant_history_entry(content, [])})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Do not finalize yet. Before FINAL ANSWER, run at least one discovery tool "
+                            f"({', '.join(sorted(_DISCOVERY_TOOLS))}) and run both required tools: "
+                            "rank_leads and orchestrate_playbook. Then finalize."
+                        ),
+                    })
+                    if premature_finalizations >= 2:
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Use exactly two tool calls now: "
+                                "1) rank_leads on current candidates, "
+                                "2) orchestrate_playbook on ranked candidates. "
+                                "Then return FINAL ANSWER."
+                            ),
+                        })
+                    continue
                 messages.append({"role": "assistant", "content": content})
                 logger.success(f"[{self.session_id}] Agent reached final answer")
                 break
@@ -130,6 +169,7 @@ class HermesAgent:
                 tool_args = call.get("arguments", {}) or {}
                 args_preview = str(tool_args)[:200]
                 logger.info(f"[{self.session_id}] Calling tool: {tool_name}({args_preview})")
+                tools_seen.add(tool_name)
 
                 if tool_name not in _VALID_TOOL_NAMES:
                     result: dict[str, Any] = {
