@@ -34,3 +34,18 @@ telemetry.jsonl
 Thumbs.db
 .idea/
 .vscode/
+
+# Guard against accidental nested path duplication
+v2/v2/
+
+# UI workspace artifacts
+v2/ui/node_modules/
+v2/ui/.next/
+v2/ui/out/
+v2/ui/dist/
+v2/ui/build/
+v2/ui/coverage/
+v2/ui/.turbo/
+v2/ui/.cache/
+v2/ui/public/sw.js
+v2/ui/public/workbox-*.js

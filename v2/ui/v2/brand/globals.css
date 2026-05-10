@@ -1,0 +1,102 @@
+:root {
+  --lh-bg: 250 3% 98%;
+  --lh-surface: 50 11% 96%;
+  --lh-card: 0 0% 100%;
+  --lh-border: 40 14% 85%;
+  --lh-text: 25 11% 10%;
+  --lh-text-sec: 30 10% 24%;
+  --lh-accent: 22 83% 47%;
+  --lh-accent-light: 47 96% 87%;
+  --lh-success: 152 69% 24%;
+  --lh-warning: 38 92% 51%;
+  --lh-danger: 0 84% 47%;
+  --lh-info: 170 65% 30%;
+  --lh-sidebar: 25 11% 10%;
+  --lh-sidebar-text: 50 11% 96%;
+}
+
+html {
+  font-family: var(--font-leadhunter-sans), system-ui, sans-serif;
+  font-size: 18px;
+  line-height: 1.6;
+}
+
+code,
+pre {
+  font-family: var(--font-leadhunter-mono), monospace;
+}
+
+@layer base {
+  body {
+    background-color: hsl(var(--lh-bg));
+    color: hsl(var(--lh-text));
+  }
+}
+
+@layer components {
+  .lh-card {
+    background-color: hsl(var(--lh-card));
+    border: 1px solid hsl(var(--lh-border));
+    border-radius: 0.875rem;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+  }
+  .lh-sidebar {
+    background-color: hsl(var(--lh-sidebar));
+    color: hsl(var(--lh-sidebar-text));
+  }
+  .lh-btn-primary {
+    background-color: hsl(var(--lh-accent));
+    color: white;
+    font-weight: 600;
+    padding: 0.625rem 1.25rem;
+    border-radius: 0.875rem;
+    transition: filter 0.2s ease;
+  }
+  .lh-btn-primary:hover {
+    filter: brightness(1.1);
+  }
+  .lh-btn-primary:focus {
+    outline: 2px solid hsl(var(--lh-accent));
+    outline-offset: 2px;
+  }
+  .lh-btn-primary:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .lh-badge-hot {
+    background-color: hsl(var(--lh-accent-light));
+    color: hsl(var(--lh-accent));
+    border: 1px solid hsl(var(--lh-accent));
+    border-radius: 999px;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .lh-badge-success {
+    background-color: rgb(220 252 231);
+    color: rgb(22 101 52);
+    border: 1px solid rgb(187 247 208);
+    border-radius: 999px;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .lh-badge-warning {
+    background-color: rgb(254 243 199);
+    color: rgb(146 64 14);
+    border: 1px solid rgb(253 230 138);
+    border-radius: 999px;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .lh-badge-danger {
+    background-color: rgb(254 226 226);
+    color: rgb(153 27 27);
+    border: 1px solid rgb(254 202 202);
+    border-radius: 999px;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+}
