@@ -15,7 +15,7 @@
 | **Runs 100% locally** | ❌ Cloud | ❌ Cloud | ❌ Cloud | ✅ **Your AMD PC** |
 | **Custom ICP logic** | Limited | Limited | Limited | ✅ **Full control** |
 | **True autonomous agent** | ❌ Rule-based | ❌ | ❌ | ✅ **Hermes ReAct** |
-| **Multi-LLM routing** | ❌ | ❌ | ❌ | ✅ **5 backends** |
+| **Multi-LLM routing** | ❌ | ❌ | ❌ | ✅ **Local-first with optional cloud fallbacks** |
 | **Your data stays local** | ❌ | ❌ | ❌ | ✅ **Always** |
 
 ---
@@ -50,7 +50,7 @@ It runs on **AMD hardware** using **Lemonade Server v10.3** (AMD's official open
 │                                                    │
 │  1️⃣  Lemonade Server (AMD local - PRIMARY)        │
 │      Qwen3-14B-Instruct-Q4_K_M (recommended)      │
-│      http://localhost:13305/v1                     │
+│      http://localhost:13305/api/v1                 │
 │                                                    │
 │  2️⃣  Claude Pro / API (Anthropic US - heavy tasks) │
 │      claude-opus-4 or claude-sonnet-4-5            │
@@ -74,12 +74,12 @@ It runs on **AMD hardware** using **Lemonade Server v10.3** (AMD's official open
 | **Heavy/Research tasks** | Claude Opus 4 / Sonnet 4.5 (Anthropic US) | Via API or Pro account |
 | **Fallback LLM** | OpenAI GPT-4.1 / GPT-4o | Via API or Plus account |
 | **Research mode** | Perplexity Sonar Pro | Real-time web search built-in |
-| **Lead enrichment** | Apollo.io API (US) | Search + enrich |
-| **Email lookup** | Hunter.io API (US) | Email finder |
+| **Lead enrichment** | Public-source waterfall | Provider-safe, provenance-first |
+| **Email lookup** | Public candidate + MX validation | Optional provider adapters |
 | **Social signals** | Reddit PRAW (US) | Intent monitoring |
 | **News signals** | NewsAPI.org (US) | Trigger event detection |
 | **Database** | PostgreSQL | Local or Supabase US |
-| **Scheduler** | APScheduler (in-process) | No external orchestrator |
+| **Scheduler** | Stdlib timed loop | No external orchestrator |
 
 ---
 
@@ -116,7 +116,7 @@ lemonade pull Qwen3-7B-Instruct-Q4_K_M
 
 # Start server (auto-detects AMD hardware)
 lemonade serve
-# API now at: http://localhost:13305/v1
+# API now at: http://localhost:13305/api/v1
 ```
 
 ### 2. Setup LeadHunterOS v2

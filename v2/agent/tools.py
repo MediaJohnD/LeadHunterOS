@@ -691,6 +691,52 @@ _ZERO_DEFECT_PRESSURE_KEYWORDS = {
     "ops bottleneck", "crm inconsistency", "manual process", "process gap",
 }
 
+# Canonical signal ontology (40+ normalized classes).
+_CANONICAL_SIGNAL_ONTOLOGY: dict[str, tuple[str, ...]] = {
+    "hiring_surge": ("hiring", "open roles", "headcount", "staffing"),
+    "funding_round": ("funding", "series", "venture", "raised"),
+    "product_launch": ("launch", "released", "debut", "ga"),
+    "geo_expansion": ("expansion", "new office", "service-area"),
+    "leadership_change": ("job change", "joined as", "appointed"),
+    "partner_announcement": ("partnership", "integration partner"),
+    "pricing_page_interest": ("pricing", "website visitor pricing"),
+    "demo_request_interest": ("demo request", "book demo"),
+    "rfp_signal": ("rfp", "request for proposal"),
+    "vendor_evaluation": ("vendor", "evaluating platforms"),
+    "crm_migration": ("crm migration", "moving from", "switching"),
+    "stack_change": ("platform change", "replatform", "migration"),
+    "security_upgrade": ("compliance", "security upgrade", "soc2"),
+    "ops_bottleneck": ("ops bottleneck", "process gap"),
+    "scheduling_friction": ("scheduling", "calendar friction"),
+    "dispatch_friction": ("dispatch", "routing delay"),
+    "response_delay": ("slow response", "response delay"),
+    "pipeline_leak": ("pipeline leak", "missed lead"),
+    "crm_inconsistency": ("crm inconsistency", "data hygiene"),
+    "manual_workflow_load": ("manual process", "spreadsheet driven"),
+    "support_backlog": ("support backlog", "ticket spike"),
+    "implementation_hiring": ("implementation specialist", "solutions engineer"),
+    "customer_success_hiring": ("customer success", "csm"),
+    "sales_hiring": ("account executive", "sdr", "bdr"),
+    "ops_hiring": ("operations manager", "office manager"),
+    "it_hiring": ("it manager", "systems admin"),
+    "finance_hiring": ("controller", "accounting manager"),
+    "legal_hiring": ("paralegal", "legal ops"),
+    "logistics_hiring": ("dispatcher", "logistics manager"),
+    "healthcare_ops_hiring": ("patient services", "clinic operations"),
+    "agency_growth": ("new clients", "agency expansion"),
+    "home_services_growth": ("new territory", "field team expansion"),
+    "review_spike": ("new reviews", "rating surge"),
+    "traffic_spike": ("traffic growth", "site visits"),
+    "content_push": ("content launch", "campaign launch"),
+    "ad_spend_signal": ("paid media", "ad spend"),
+    "conference_presence": ("speaker", "conference booth"),
+    "open_source_momentum": ("github stars", "repo activity"),
+    "community_mentions": ("reddit mentions", "hn discussion"),
+    "marketplace_launch": ("product hunt", "marketplace listing"),
+    "remote_hiring_signal": ("remote role", "distributed hiring"),
+    "compliance_deadline": ("deadline", "regulatory requirement"),
+}
+
 
 def _csv_tokens(value: str) -> list[str]:
     return [item.strip().lower() for item in value.split(",") if item.strip()]
@@ -761,6 +807,15 @@ def _signal_quality_bonus(signals: list[str]) -> tuple[int, int]:
     return intent_bonus, evidence_bonus
 
 
+def _canonicalize_signal_tags(signals: list[str]) -> list[str]:
+    blob = " ".join(str(item).lower() for item in signals)
+    tags: list[str] = []
+    for tag, patterns in _CANONICAL_SIGNAL_ONTOLOGY.items():
+        if any(pattern in blob for pattern in patterns):
+            tags.append(tag)
+    return tags
+
+
 def _classify_contact_resolution(*, name: str, domain: str, public_profile_url: str, mx_ok: bool) -> str:
     has_name = bool((name or "").strip())
     has_domain = bool((domain or "").strip())
@@ -799,7 +854,8 @@ def _provider_vote(aggregate: dict[str, Any], provenance: list[dict[str, Any]]) 
 def _build_reason_rollup(*, lead: dict[str, Any], components: dict[str, int]) -> dict[str, str]:
     signals = [str(item).lower() for item in _normalize_signals_payload(lead.get("signals", []))]
     signals_blob = " ".join(signals)
-    why_now_tokens = [k for k in sorted(_HIGH_INTENT_SIGNAL_KEYWORDS) if k in signals_blob][:5]
+    canonical_tags = _canonicalize_signal_tags(_normalize_signals_payload(lead.get("signals", [])))
+    why_now_tokens = canonical_tags[:5] or [k for k in sorted(_HIGH_INTENT_SIGNAL_KEYWORDS) if k in signals_blob][:5]
     why_fit_tokens: list[str] = []
     title = str(lead.get("title", "")).lower()
     industry = str(lead.get("industry", "")).lower()
@@ -982,6 +1038,8 @@ def _validate_public_lead(payload: dict[str, Any]) -> str | None:
         )
     if not any([domain, source_url, public_profile_url]):
         return "Lead must include a verifiable company domain, public profile URL, or source URL."
+    if domain and domain in {"localhost", "127.0.0.1"}:
+        return "Lead domain is not externally verifiable."
     if source_url and _looks_placeholder(source_url):
         return "Lead source URL is not verifiable."
     if source_type and _looks_placeholder(source_type):
@@ -1272,7 +1330,7 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
         deduped.append(item)
         if len(deduped) >= limit:
             break
-    us_tokens = [" united states", " usa", " us ", " u.s.", " america", " atlanta", " georgia"]
+    us_tokens = [" united states", " usa", " us ", " u.s.", " america", " texas", " california", "new york", "florida", "illinois"]
     us_filtered = [
         item for item in deduped
         if any(token in json.dumps(item, default=str).lower() for token in us_tokens)
@@ -1283,6 +1341,7 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
         "query": scoped,
         "count": len(final_results),
         "providers_used": providers,
+        "canonical_tags": _canonicalize_signal_tags([json.dumps(item, default=str) for item in final_results]),
         "results": final_results[:limit],
     }
 
@@ -1617,9 +1676,16 @@ def _search_apollo(
     keywords: str = "",
     limit: int = 10,
 ) -> dict[str, Any]:
+    if not getattr(config, "APOLLO_API_KEY", "").strip():
+        return {
+            "ok": False,
+            "error": "apollo_not_configured",
+            "note": "Set APOLLO_API_KEY to enable this provider.",
+        }
     return {
-        "ok": True,
-        "note": "Apollo search placeholder preserved for compatibility.",
+        "ok": False,
+        "error": "apollo_provider_not_implemented",
+        "note": "Provider adapter required; placeholder disabled to prevent false positives.",
         "job_titles": job_titles,
         "industries": industries or [],
         "employee_range": employee_range,
@@ -1634,9 +1700,16 @@ def _enrich_apollo(
     domain: str = "",
     linkedin_url: str = "",
 ) -> dict[str, Any]:
+    if not getattr(config, "APOLLO_API_KEY", "").strip():
+        return {
+            "ok": False,
+            "error": "apollo_not_configured",
+            "note": "Set APOLLO_API_KEY to enable this provider.",
+        }
     return {
-        "ok": True,
-        "note": "Apollo enrichment placeholder preserved for compatibility.",
+        "ok": False,
+        "error": "apollo_provider_not_implemented",
+        "note": "Provider adapter required; placeholder disabled to prevent false positives.",
         "name": name,
         "company": company,
         "domain": domain,
@@ -1649,9 +1722,16 @@ def _find_email_hunter(
     company: str = "",
     domain: str = "",
 ) -> dict[str, Any]:
+    if not getattr(config, "HUNTER_API_KEY", "").strip():
+        return {
+            "ok": False,
+            "error": "hunter_not_configured",
+            "note": "Set HUNTER_API_KEY to enable this provider.",
+        }
     return {
-        "ok": True,
-        "note": "Hunter lookup placeholder preserved for compatibility.",
+        "ok": False,
+        "error": "hunter_provider_not_implemented",
+        "note": "Provider adapter required; placeholder disabled to prevent false positives.",
         "name": name,
         "company": company,
         "domain": domain,

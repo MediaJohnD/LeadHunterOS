@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import socket
 import time
+import ipaddress
 from typing import Any
 from urllib.parse import urlparse, quote_plus
 
@@ -40,6 +41,50 @@ SESSION.headers.update({
     "User-Agent": "LeadHunterOS research@leadhunteros.local",
     "Accept": "text/html,application/xhtml+xml,application/json",
 })
+
+
+def _is_private_or_reserved_host(host: str) -> bool:
+    lowered = (host or "").strip().lower()
+    if not lowered:
+        return True
+    if lowered in {"localhost", "0.0.0.0"} or lowered.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(lowered)
+        return (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+        )
+    except ValueError:
+        pass
+    try:
+        resolved = socket.gethostbyname(lowered)
+        ip = ipaddress.ip_address(resolved)
+        return (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+        )
+    except Exception:
+        return True
+
+
+def _is_safe_domain(domain: str) -> bool:
+    host = (domain or "").strip().lower()
+    if not host:
+        return False
+    for prefix in ["https://", "http://", "www."]:
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    host = host.split("/")[0].strip()
+    if "." not in host:
+        return False
+    return not _is_private_or_reserved_host(host)
 
 # ---------------------------------------------------------------------------
 # Email candidates
@@ -138,6 +183,10 @@ def scrape_website_metadata(domain: str) -> dict:
         "tech_hints": [],
         "website_status": None,
     }
+    if not _is_safe_domain(domain):
+        logger.warning(f"Blocked unsafe domain scrape attempt: {domain}")
+        result["website_status"] = "blocked_unsafe_domain"
+        return result
     for scheme in ["https", "http"]:
         try:
             url = f"{scheme}://{domain}"
@@ -200,6 +249,8 @@ def get_company_logo_url(domain: str) -> str:
 
 def get_domain_rdap(domain: str) -> dict:
     """Fetch public RDAP info for a domain (registrar, dates, nameservers)."""
+    if not _is_safe_domain(domain):
+        return {}
     try:
         resp = requests.get(f"https://rdap.org/domain/{domain}", timeout=8)
         if resp.status_code != 200:

@@ -1,0 +1,33 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Local databases and exports
+*.db
+*.sqlite
+*.sqlite3
+leadhunter.db
+v2/leadhunter.db
+leads_latest.csv
+v2/leads_latest.csv
+
+# Logs
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
