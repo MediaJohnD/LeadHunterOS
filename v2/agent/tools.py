@@ -422,6 +422,42 @@ TOOLS: list[dict[str, Any]] = [
         }
     },
     {
+        "name": "search_tech_stack_signals",
+        "description": "No-login technographic discovery using BuiltWith/Wappalyzer style public evidence via web x-ray.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "search_review_signals",
+        "description": "No-login buyer pain signals from G2/Capterra public pages via web x-ray.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "search_firmographic_signals",
+        "description": "No-login firmographic signals from OpenCorporates/YellowPages public pages via web x-ray.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "search_x_company_signals",
+        "description": "No-login X company signal discovery via public x.com profile/post x-ray.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"]
+        }
+    },
+    {
         "name": "search_apollo",
         "description": "Search Apollo.io for leads by job title, industry, company size, and keywords. Use as last-mile contact resolution after public-signal discovery.",
         "parameters": {
@@ -726,6 +762,14 @@ _SOURCE_RELIABILITY = {
     "orcid": 7,
     "glassdoor": 7,
     "website": 10,
+    "g2": 7,
+    "capterra": 7,
+    "wappalyzer": 8,
+    "builtwith": 8,
+    "opencorporates": 9,
+    "yellowpages": 8,
+    "x": 6,
+    "twitter": 6,
 }
 
 _HIGH_INTENT_SIGNAL_KEYWORDS = {
@@ -873,6 +917,7 @@ def _signal_source_set(signals: list[str], source_type: str = "", source_url: st
         for candidate in [
             "jobspy", "linkedin", "reddit", "news", "github", "hackernews",
             "producthunt", "remoteok", "conference", "orcid", "glassdoor", "website",
+            "g2", "capterra", "builtwith", "wappalyzer", "opencorporates", "yellowpages", "x.com", "twitter",
         ]:
             if candidate in text:
                 sources.add(candidate)
@@ -1432,6 +1477,26 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
         if ddg.get("ok"):
             merged.extend(_slice_results(ddg.get("results", []), target))
             providers.append("duckduckgo")
+    if len(merged) < target:
+        tech = _search_tech_stack_signals(scoped, limit=max(3, target // 3))
+        if tech.get("ok"):
+            merged.extend(_slice_results(tech.get("results", []), target))
+            providers.append("tech_stack")
+    if len(merged) < target:
+        reviews = _search_review_signals(scoped, limit=max(3, target // 3))
+        if reviews.get("ok"):
+            merged.extend(_slice_results(reviews.get("results", []), target))
+            providers.append("reviews")
+    if len(merged) < target:
+        firmo = _search_firmographic_signals(scoped, limit=max(3, target // 3))
+        if firmo.get("ok"):
+            merged.extend(_slice_results(firmo.get("results", []), target))
+            providers.append("firmographics")
+    if len(merged) < target:
+        xsig = _search_x_company_signals(scoped, limit=max(3, target // 3))
+        if xsig.get("ok"):
+            merged.extend(_slice_results(xsig.get("results", []), target))
+            providers.append("x_company")
     deduped: list[Any] = []
     seen: set[str] = set()
     for item in merged:
@@ -1460,6 +1525,10 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
             "reddit",
             "github",
             "duckduckgo",
+            "tech_stack",
+            "reviews",
+            "firmographics",
+            "x_company",
         ],
         "no_paid_sources_used": True,
         "count": len(final_results),
@@ -1561,6 +1630,78 @@ def _search_duckduckgo_signals(query: str, limit: int = 10) -> dict[str, Any]:
         if len(cleaned) >= max_results:
             break
     return {"ok": True, "provider": "duckduckgo_ddgs", "results": cleaned}
+
+
+def _ddg_domain_xray(query: str, domains: list[str], limit: int, source_label: str) -> dict[str, Any]:
+    scoped = _normalize_signal_query(query)
+    rows: list[dict[str, Any]] = []
+    per_domain_limit = max(1, limit // max(1, len(domains)))
+    for domain in domains:
+        xq = f"{scoped} site:{domain}"
+        out = _search_duckduckgo_signals(xq, limit=per_domain_limit)
+        if not out.get("ok"):
+            continue
+        for item in _slice_results(out.get("results", []), per_domain_limit):
+            text = str(item.get("snippet", "")).strip()
+            url = str(item.get("source_url", "")).strip()
+            score = min(95, 35 + (10 if url else 0) + (10 if text else 0))
+            rows.append(
+                {
+                    "source": source_label,
+                    "source_url": url,
+                    "title": str(item.get("title", "")).strip(),
+                    "snippet": text,
+                    "confidence_score": score,
+                    "evidence_type": source_label,
+                }
+            )
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        key = f"{row.get('source_url','')}|{row.get('title','')}"[:300]
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+        if len(deduped) >= max(1, limit):
+            break
+    return {"ok": True, "results": deduped}
+
+
+def _search_tech_stack_signals(query: str, limit: int = 10) -> dict[str, Any]:
+    return _ddg_domain_xray(
+        query=query,
+        domains=["builtwith.com", "wappalyzer.com"],
+        limit=max(1, limit),
+        source_label="technographic",
+    )
+
+
+def _search_review_signals(query: str, limit: int = 10) -> dict[str, Any]:
+    return _ddg_domain_xray(
+        query=query,
+        domains=["g2.com", "capterra.com"],
+        limit=max(1, limit),
+        source_label="reviews",
+    )
+
+
+def _search_firmographic_signals(query: str, limit: int = 10) -> dict[str, Any]:
+    return _ddg_domain_xray(
+        query=query,
+        domains=["opencorporates.com", "yellowpages.com"],
+        limit=max(1, limit),
+        source_label="firmographic",
+    )
+
+
+def _search_x_company_signals(query: str, limit: int = 10) -> dict[str, Any]:
+    return _ddg_domain_xray(
+        query=query,
+        domains=["x.com"],
+        limit=max(1, limit),
+        source_label="x_company",
+    )
 
 
 def _search_google_xray_linkedin(query: str, limit: int = 20) -> dict[str, Any]:
@@ -2338,6 +2479,10 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         "search_news_signals": _search_news_signals,
         "search_duckduckgo_signals": _search_duckduckgo_signals,
         "search_duckduckgo_instant": _search_duckduckgo_instant,
+        "search_tech_stack_signals": _search_tech_stack_signals,
+        "search_review_signals": _search_review_signals,
+        "search_firmographic_signals": _search_firmographic_signals,
+        "search_x_company_signals": _search_x_company_signals,
         "search_github_signals": _search_github_signals,
         "search_hn_signals": _search_hn_signals,
         "search_producthunt_signals": _search_producthunt_signals,

@@ -84,7 +84,7 @@ It runs on **AMD hardware** using **Lemonade Server v10.3** (AMD's official open
 
 Priority order: intent strength > coverage > freshness > ease.  
 Waterfall rule: run ranks 1-5 first (target 90% hit coverage) before optional sources.  
-Policy: no paid APIs until free/no-login sources are exhausted.
+Policy: no paid APIs until free/no-login sources are exhausted (Google X-ray, Crunchbase public, jobs/news, Reddit/GitHub, DDG, technographic/review/firmographic/X-domain x-rays).
 
 | Rank | Source/tool | Status in v2 | Notes |
 |---|---|---|---|
