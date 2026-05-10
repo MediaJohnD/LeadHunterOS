@@ -89,6 +89,15 @@ def _ensure_sqlite_schema(engine: Engine) -> None:
             )
         """))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_entities_key ON lead_entities(canonical_key)"))
+        # Upserts below use ON CONFLICT(canonical_key), which requires a UNIQUE
+        # constraint/index on canonical_key in SQLite.
+        conn.execute(text("""
+            DELETE FROM lead_entities
+            WHERE rowid NOT IN (
+                SELECT MIN(rowid) FROM lead_entities GROUP BY canonical_key
+            )
+        """))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_lead_entities_canonical_key ON lead_entities(canonical_key)"))
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS entity_edges (
               edge_id TEXT PRIMARY KEY,
