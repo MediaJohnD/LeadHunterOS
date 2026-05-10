@@ -641,6 +641,65 @@ def _csv_tokens(value: str) -> list[str]:
     return [item.strip().lower() for item in value.split(",") if item.strip()]
 
 
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return int(digits) if digits else None
+
+
+def _normalize_signals_payload(signals: Any) -> list[str]:
+    if isinstance(signals, list):
+        return [str(item).strip() for item in signals if str(item).strip()]
+    if isinstance(signals, dict):
+        normalized: list[str] = []
+        for key, value in signals.items():
+            if isinstance(value, (int, float)) and value > 0:
+                normalized.append(f"{key}:{int(value)}")
+            elif isinstance(value, str) and value.strip():
+                normalized.append(f"{key}:{value.strip()}")
+        return normalized
+    if isinstance(signals, str) and signals.strip():
+        return [signals.strip()]
+    return []
+
+
+def _passes_icp_hard_filter(
+    *,
+    title: str,
+    industry: str,
+    company_size: int | None,
+    work_location: str = "",
+) -> tuple[bool, str]:
+    target_titles = _csv_tokens(config.ICP_TARGET_TITLES)
+    target_industries = _csv_tokens(config.ICP_TARGET_INDUSTRIES)
+    title_lower = title.lower()
+    industry_lower = industry.lower()
+    location_lower = work_location.lower()
+
+    title_match = any(token in title_lower for token in target_titles)
+    industry_match = any(token in industry_lower for token in target_industries) if industry_lower else False
+    size_min = max(1, config.ICP_MIN_COMPANY_SIZE)
+    size_max = max(size_min, config.ICP_MAX_COMPANY_SIZE)
+    size_match = company_size is not None and size_min <= company_size <= size_max
+    location_match = any(token in location_lower for token in [config.TARGET_COUNTRY.lower(), config.TARGET_REGION.lower(), config.TARGET_METRO.lower()]) if location_lower else True
+
+    if not location_match:
+        return False, "Lead is outside target country/region scope."
+    if not title_match:
+        return False, "Lead title does not match ICP target roles."
+    if industry and not industry_match:
+        return False, "Lead industry does not match ICP target industries."
+    if company_size is not None and not size_match:
+        return False, f"Lead company size is outside ICP range ({size_min}-{size_max})."
+    return True, ""
+
+
 def _normalize_query_tokens(query: str, max_terms: int = 8) -> list[str]:
     tokens = re.findall(r"[a-z0-9\-\+]+", query.lower())
     normalized: list[str] = []
@@ -724,7 +783,7 @@ def _validate_public_lead(payload: dict[str, Any]) -> str | None:
     source_url = str(payload.get("source_url", "")).strip()
     source_type = str(payload.get("source_type", "")).strip()
     public_profile_url = str(payload.get("public_profile_url", "")).strip()
-    signals = payload.get("signals", [])
+    signals = _normalize_signals_payload(payload.get("signals", []))
 
     if not name or not company or not title:
         return "Lead must include a real name, title, and company."
@@ -740,6 +799,15 @@ def _validate_public_lead(payload: dict[str, Any]) -> str | None:
         return "Lead source URL is not verifiable."
     if source_type and _looks_placeholder(source_type):
         return "Lead source type is not verifiable."
+    size_value = _coerce_int(payload.get("company_size"))
+    passes_filter, reason = _passes_icp_hard_filter(
+        title=title,
+        industry=str(payload.get("industry", "")),
+        company_size=size_value,
+        work_location=str(payload.get("work_location", "")),
+    )
+    if not passes_filter:
+        return reason
     return None
 
 
@@ -1040,13 +1108,16 @@ def _search_jobs_public(query: str, location: str = "", days_back: int = 30, lim
 
 
 def _search_jobs_by_icp_tool(
-    icp_keywords: list[str],
+    icp_keywords: list[str] | str,
     location: str = "",
     days_back: int = 30,
     limit: int = 10,
 ) -> dict[str, Any]:
     if search_jobs is None:
         return {"ok": False, "error": "search_jobs is not available"}
+    if isinstance(icp_keywords, str):
+        parsed = [part.strip() for part in icp_keywords.split(",") if part.strip()]
+        icp_keywords = parsed if parsed else [icp_keywords]
     # search_jobs takes job_titles: list[str], hours_old: int
     job_titles: list[str] = []
     seen: set[str] = set()
@@ -1243,14 +1314,31 @@ def _score_lead(
     industry: str = "",
     signals: list[str] | None = None,
 ) -> dict[str, Any]:
-    signals = signals or []
+    normalized_signals = _normalize_signals_payload(signals or [])
+    normalized_company_size = _coerce_int(company_size)
+    passes_filter, reason = _passes_icp_hard_filter(
+        title=title,
+        industry=industry,
+        company_size=normalized_company_size,
+    )
+    if not passes_filter:
+        return {
+            "ok": True,
+            "name": name,
+            "company": company,
+            "score": 0,
+            "icp_score": 0,
+            "rejected": True,
+            "rejection_reason": reason,
+            "reasoning": {"title": title, "industry": industry, "company_size": normalized_company_size, "signals": normalized_signals},
+        }
     components = _score_components(
         name=name,
         title=title,
         company=company,
-        company_size=company_size,
+        company_size=normalized_company_size,
         industry=industry,
-        signals=signals,
+        signals=normalized_signals,
     )
     score = _composite_icp_score(components)
     return {
@@ -1268,9 +1356,9 @@ def _score_lead(
         "reasoning": {
             "title": title,
             "industry": industry,
-            "company_size": company_size,
-            "signals_count": len(signals),
-            "signals": signals,
+            "company_size": normalized_company_size,
+            "signals_count": len(normalized_signals),
+            "signals": normalized_signals,
         },
     }
 
@@ -1284,13 +1372,24 @@ def _rank_leads(leads: list[dict[str, Any]], top_n: int = 10) -> dict[str, Any]:
             dropped += 1
             continue
         key = _lead_dedupe_key(lead)
+        normalized_company_size = _coerce_int(lead.get("company_size"))
+        normalized_signals = _normalize_signals_payload(lead.get("signals", []))
+        passes_filter, _ = _passes_icp_hard_filter(
+            title=str(lead.get("title", "")),
+            industry=str(lead.get("industry", "")),
+            company_size=normalized_company_size,
+            work_location=str(lead.get("work_location", "")),
+        )
+        if not passes_filter:
+            dropped += 1
+            continue
         components = _score_components(
             name=str(lead.get("name", "")),
             title=str(lead.get("title", "")),
             company=str(lead.get("company", "")),
-            company_size=lead.get("company_size"),
+            company_size=normalized_company_size,
             industry=str(lead.get("industry", "")),
-            signals=lead.get("signals", []) if isinstance(lead.get("signals"), list) else [],
+            signals=normalized_signals,
             work_location=str(lead.get("work_location", "")),
             source_url=str(lead.get("source_url", "")),
             public_profile_url=str(lead.get("public_profile_url", "")),
@@ -1299,6 +1398,8 @@ def _rank_leads(leads: list[dict[str, Any]], top_n: int = 10) -> dict[str, Any]:
         )
         icp_score = _composite_icp_score(components)
         candidate = dict(lead)
+        candidate["company_size"] = normalized_company_size
+        candidate["signals"] = normalized_signals
         candidate.update(components)
         candidate["icp_score"] = icp_score
         if components["evidence_score"] < max(0, config.MIN_EVIDENCE_SCORE):
@@ -1385,6 +1486,10 @@ def _orchestrate_playbook(
 
 def _save_lead(**payload: Any) -> dict[str, Any]:
     cleaned = _filter_public_fields(payload)
+    cleaned["signals"] = _normalize_signals_payload(cleaned.get("signals", []))
+    size_value = _coerce_int(cleaned.get("company_size"))
+    if size_value is not None:
+        cleaned["company_size"] = size_value
     validation_error = _validate_public_lead(cleaned)
     if validation_error:
         return {"ok": False, "saved": False, "error": validation_error, "lead": cleaned}
@@ -1393,7 +1498,7 @@ def _save_lead(**payload: Any) -> dict[str, Any]:
         name=str(cleaned.get("name", "")),
         title=str(cleaned.get("title", "")),
         company=str(cleaned.get("company", "")),
-        company_size=cleaned.get("company_size"),
+        company_size=size_value,
         industry=str(cleaned.get("industry", "")),
         signals=lead_signals,
         work_location=str(cleaned.get("work_location", "")),

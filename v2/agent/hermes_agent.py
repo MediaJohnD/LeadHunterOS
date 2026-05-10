@@ -22,9 +22,10 @@ Rules:
 1) Use public signals first, then enrichment, then ranking/orchestration.
 2) US scope only: {config.TARGET_COUNTRY}; exclude unclear/non-US leads.
 3) Never invent data. No placeholders.
-4) Save only leads meeting gates: icp_score >= {config.ICP_MIN_SCORE}.
-5) Draft outreach only for verified, saved leads.
-6) Max 3 tool calls per turn.
+4) Enforce SMB ICP hard filters before save/outreach (titles, industries, company-size range).
+5) Save only leads meeting gates: icp_score >= {config.ICP_MIN_SCORE}.
+6) Draft outreach only for verified, saved leads.
+7) Max 3 tool calls per turn.
 
 Tool call format:
 <tool_call>{{"name":"tool_name","arguments":{{...}}}}</tool_call>
@@ -67,6 +68,7 @@ class HermesAgent:
         iterations = 0
         last_response: dict[str, Any] = {}
         no_progress_turns = 0
+        tool_result_cache: dict[str, dict[str, Any]] = {}
 
         while iterations < MAX_ITERATIONS:
             iterations += 1
@@ -137,7 +139,17 @@ class HermesAgent:
                     }
                 else:
                     try:
-                        result = dispatch_tool(tool_name, tool_args)
+                        cache_key = ""
+                        if tool_name in {"score_lead", "rank_leads", "orchestrate_playbook"}:
+                            cache_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True, default=str)}"
+                        if cache_key and cache_key in tool_result_cache:
+                            result = tool_result_cache[cache_key]
+                            result = dict(result)
+                            result["cache_hit"] = True
+                        else:
+                            result = dispatch_tool(tool_name, tool_args)
+                            if cache_key:
+                                tool_result_cache[cache_key] = dict(result)
                         if tool_name == "save_lead" and result.get("saved"):
                             leads_saved.append(result.get("lead", result))
                     except Exception as exc:
