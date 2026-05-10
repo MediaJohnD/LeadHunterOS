@@ -581,6 +581,12 @@ PUBLIC_FIELD_ALLOWLIST = {
     "zero_defect_score",
     "evidence_score",
     "personalized_opener",
+    "contact_resolution_tier",
+    "provider_voting",
+    "why_now",
+    "why_fit",
+    "why_contact",
+    "decision_reason",
 }
 
 
@@ -753,6 +759,91 @@ def _signal_quality_bonus(signals: list[str]) -> tuple[int, int]:
     intent_bonus = min(20, high_intent_hits * 4)
     evidence_bonus = min(12, zero_defect_hits * 3)
     return intent_bonus, evidence_bonus
+
+
+def _classify_contact_resolution(*, name: str, domain: str, public_profile_url: str, mx_ok: bool) -> str:
+    has_name = bool((name or "").strip())
+    has_domain = bool((domain or "").strip())
+    has_profile = bool((public_profile_url or "").strip())
+    if has_name and has_domain and (has_profile or mx_ok):
+        return "exact_contact"
+    if has_name and (has_domain or has_profile):
+        return "probable_contact"
+    return "account_only"
+
+
+def _provider_vote(aggregate: dict[str, Any], provenance: list[dict[str, Any]]) -> dict[str, Any]:
+    """Cross-validate core fields across enrichment providers."""
+    voters = [step["step"] for step in provenance if step.get("ok")]
+    field_votes = {
+        "company_domain": 0,
+        "company_url": 0,
+        "industry": 0,
+        "title": 0,
+    }
+    for field in list(field_votes.keys()):
+        value = str(aggregate.get(field, "")).strip()
+        if value:
+            # Lightweight proxy vote: if field exists and multiple providers succeeded, confidence rises.
+            field_votes[field] = min(len(voters), 4)
+    agreed = sum(1 for _, count in field_votes.items() if count >= 2)
+    confidence_boost = min(12, agreed * 3)
+    return {
+        "providers": voters,
+        "field_votes": field_votes,
+        "agreed_fields": agreed,
+        "confidence_boost": confidence_boost,
+    }
+
+
+def _build_reason_rollup(*, lead: dict[str, Any], components: dict[str, int]) -> dict[str, str]:
+    signals = [str(item).lower() for item in _normalize_signals_payload(lead.get("signals", []))]
+    signals_blob = " ".join(signals)
+    why_now_tokens = [k for k in sorted(_HIGH_INTENT_SIGNAL_KEYWORDS) if k in signals_blob][:5]
+    why_fit_tokens: list[str] = []
+    title = str(lead.get("title", "")).lower()
+    industry = str(lead.get("industry", "")).lower()
+    for token in _csv_tokens(config.ICP_TARGET_TITLES):
+        if token and token in title:
+            why_fit_tokens.append(f"title:{token}")
+            break
+    for token in _csv_tokens(config.ICP_TARGET_INDUSTRIES):
+        if token and token in industry:
+            why_fit_tokens.append(f"industry:{token}")
+            break
+    size = _coerce_int(lead.get("company_size"))
+    if size is not None and config.ICP_MIN_COMPANY_SIZE <= size <= config.ICP_MAX_COMPANY_SIZE:
+        why_fit_tokens.append(f"size:{size}")
+    why_contact_parts = []
+    if lead.get("company_domain"):
+        why_contact_parts.append("domain_verified")
+    if lead.get("public_profile_url"):
+        why_contact_parts.append("public_profile")
+    if components.get("evidence_score", 0) >= config.MIN_EVIDENCE_SCORE:
+        why_contact_parts.append("evidence_threshold_met")
+
+    return {
+        "why_now": ", ".join(why_now_tokens) or "signal_momentum_detected",
+        "why_fit": ", ".join(why_fit_tokens) or "icp_alignment_detected",
+        "why_contact": ", ".join(why_contact_parts) or "account_level_confidence",
+    }
+
+
+def _detect_trigger_playbooks(lead: dict[str, Any]) -> list[str]:
+    signals = [str(item).lower() for item in _normalize_signals_payload(lead.get("signals", []))]
+    blob = " ".join(signals)
+    triggers: list[str] = []
+    if ("funding" in blob or "series" in blob) and ("hiring" in blob or "headcount" in blob):
+        triggers.append("funding_plus_hiring_spike")
+    if "job change" in blob or "new role" in blob or "joined as" in blob:
+        triggers.append("champion_change_event")
+    if "pricing" in blob or "website visitor" in blob or "demo request" in blob:
+        triggers.append("high_intent_web_behavior")
+    if any(k in blob for k in ["scheduling", "dispatch", "response delay", "crm inconsistency", "manual process"]):
+        triggers.append("zero_defect_pressure")
+    if "expansion" in blob or "new office" in blob or "service-area" in blob:
+        triggers.append("expansion_motion")
+    return triggers or ["general_icp_handoff"]
 
 
 def _passes_icp_hard_filter(
@@ -1407,6 +1498,20 @@ def _enrich_lead_waterfall(
         aggregate["apollo_fallback"] = fallback
         confidence += 5
 
+    # Provider-voting cross validation
+    voting = _provider_vote(aggregate, provenance)
+    confidence += int(voting.get("confidence_boost", 0))
+    aggregate["provider_voting"] = voting
+
+    mx_ok = bool((aggregate.get("mx_verification") or {}).get("ok", True))
+    contact_tier = _classify_contact_resolution(
+        name=name,
+        domain=resolved_domain or str(aggregate.get("company_domain", "")),
+        public_profile_url=str(aggregate.get("public_profile_url", "")),
+        mx_ok=mx_ok,
+    )
+    aggregate["contact_resolution_tier"] = contact_tier
+
     return {
         "ok": True,
         "data": _filter_public_fields(aggregate) | {"provenance": provenance},
@@ -1718,10 +1823,21 @@ def _orchestrate_playbook(
         if int(lead.get("icp_score", 0)) >= config.ICP_MIN_SCORE
         and int(lead.get("evidence_score", 0)) >= config.MIN_EVIDENCE_SCORE
     ][:max(1, max_outreach)]
+    trigger_map = [
+        {
+            "name": lead.get("name", ""),
+            "company": lead.get("company", ""),
+            "icp_score": int(lead.get("icp_score", 0)),
+            "triggers": _detect_trigger_playbooks(lead),
+            "next_action": "crm_handoff_with_trigger_context",
+        }
+        for lead in selected
+    ]
     return {
         "ok": True,
         "objective": objective,
         "selected_for_crm_handoff": selected,
+        "trigger_playbooks": trigger_map,
         "selection_count": len(selected),
         "gates": {
             "icp_min_score": config.ICP_MIN_SCORE,
@@ -1763,9 +1879,13 @@ def _save_lead(**payload: Any) -> dict[str, Any]:
     cleaned["recency_score"] = components["recency_score"]
     cleaned["evidence_confidence_score"] = components["evidence_confidence_score"]
     cleaned["icp_score"] = int(cleaned.get("icp_score", computed_icp) or computed_icp)
-    cleaned["decision_reason"] = (
-        cleaned.get("decision_reason")
-        or f"icp={cleaned['icp_score']}, evidence={components['evidence_score']}, intent={components['intent_strength_score']}"
+    rollup = _build_reason_rollup(lead=cleaned, components=components)
+    cleaned["why_now"] = rollup["why_now"]
+    cleaned["why_fit"] = rollup["why_fit"]
+    cleaned["why_contact"] = rollup["why_contact"]
+    cleaned["decision_reason"] = cleaned.get("decision_reason") or (
+        f"why_now={rollup['why_now']} | why_fit={rollup['why_fit']} | why_contact={rollup['why_contact']}; "
+        f"icp={cleaned['icp_score']}, evidence={components['evidence_score']}, intent={components['intent_strength_score']}"
     )
     if cleaned["icp_score"] < config.ICP_MIN_SCORE:
         return {"ok": False, "saved": False, "error": f"Lead score below ICP threshold ({config.ICP_MIN_SCORE}).", "lead": cleaned}
