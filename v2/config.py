@@ -94,7 +94,7 @@ AGENT_MAX_ITERATIONS: int = _int("AGENT_MAX_ITERATIONS", 15)
 # -- LEAD SEARCH SETTINGS -----------------------------------------------------
 LEAD_SEARCH_QUERY: str = os.getenv(
     "LEAD_SEARCH_QUERY",
-    "Atlanta SMB companies in Georgia with hiring, expansion, or funding signals",
+    "US SMB companies with hiring, expansion, technology-change, or funding signals",
 )
 LEAD_MAX_RESULTS: int = _int("LEAD_MAX_RESULTS", 50)
 LEAD_OUTPUT_FORMAT: str = os.getenv("LEAD_OUTPUT_FORMAT", "json")
@@ -126,8 +126,8 @@ ICP_TARGET_INDUSTRIES: str = os.getenv(
     "ICP_TARGET_INDUSTRIES",
     "home services,legal,accounting,it services,logistics,healthcare support,agency,agencies,saas,software",
 )
-TARGET_METRO: str = os.getenv("TARGET_METRO", "Atlanta, GA")
-TARGET_REGION: str = os.getenv("TARGET_REGION", "Georgia")
+TARGET_METRO: str = os.getenv("TARGET_METRO", "United States")
+TARGET_REGION: str = os.getenv("TARGET_REGION", "United States")
 TARGET_COUNTRY: str = os.getenv("TARGET_COUNTRY", "United States")
 TARGET_COUNTRY_CODE: str = os.getenv("TARGET_COUNTRY_CODE", "US")
 
@@ -158,3 +158,4 @@ OUTCOME_LEARNING_ENABLED: bool = _bool("OUTCOME_LEARNING_ENABLED", True)
 OUTCOME_LEARNING_WINDOW: int = _int("OUTCOME_LEARNING_WINDOW", 200)
 OUTCOME_BONUS_MAX: int = _int("OUTCOME_BONUS_MAX", 15)
 MIN_DISCOVERY_RESULTS: int = _int("MIN_DISCOVERY_RESULTS", 8)
+MIN_DISTINCT_SIGNAL_SOURCES: int = _int("MIN_DISTINCT_SIGNAL_SOURCES", 2)

@@ -674,6 +674,17 @@ _SOURCE_RELIABILITY = {
     "website": 10,
 }
 
+_HIGH_INTENT_SIGNAL_KEYWORDS = {
+    "funding", "series", "hiring", "job opening", "expansion", "new office", "launch",
+    "rfp", "vendor", "migration", "implementation", "platform change", "crm",
+    "response delay", "scale-up", "headcount",
+}
+
+_ZERO_DEFECT_PRESSURE_KEYWORDS = {
+    "missed lead", "scheduling", "dispatch", "handoff", "pipeline leak", "slow response",
+    "ops bottleneck", "crm inconsistency", "manual process", "process gap",
+}
+
 
 def _csv_tokens(value: str) -> list[str]:
     return [item.strip().lower() for item in value.split(",") if item.strip()]
@@ -710,6 +721,38 @@ def _normalize_signals_payload(signals: Any) -> list[str]:
     if isinstance(signals, str) and signals.strip():
         return [signals.strip()]
     return []
+
+
+def _signal_source_set(signals: list[str], source_type: str = "", source_url: str = "") -> set[str]:
+    sources: set[str] = set()
+    if source_type.strip():
+        sources.add(source_type.strip().lower())
+    if "linkedin.com" in source_url.lower():
+        sources.add("linkedin")
+    if "github.com" in source_url.lower():
+        sources.add("github")
+    if "reddit.com" in source_url.lower():
+        sources.add("reddit")
+    if "news" in source_url.lower():
+        sources.add("news")
+    for signal in signals:
+        text = str(signal).lower()
+        for candidate in [
+            "jobspy", "linkedin", "reddit", "news", "github", "hackernews",
+            "producthunt", "remoteok", "conference", "orcid", "glassdoor", "website",
+        ]:
+            if candidate in text:
+                sources.add(candidate)
+    return sources
+
+
+def _signal_quality_bonus(signals: list[str]) -> tuple[int, int]:
+    text = " ".join(str(signal).lower() for signal in signals)
+    high_intent_hits = sum(1 for keyword in _HIGH_INTENT_SIGNAL_KEYWORDS if keyword in text)
+    zero_defect_hits = sum(1 for keyword in _ZERO_DEFECT_PRESSURE_KEYWORDS if keyword in text)
+    intent_bonus = min(20, high_intent_hits * 4)
+    evidence_bonus = min(12, zero_defect_hits * 3)
+    return intent_bonus, evidence_bonus
 
 
 def _passes_icp_hard_filter(
@@ -827,6 +870,11 @@ def _validate_public_lead(payload: dict[str, Any]) -> str | None:
     source_type = str(payload.get("source_type", "")).strip()
     public_profile_url = str(payload.get("public_profile_url", "")).strip()
     signals = _normalize_signals_payload(payload.get("signals", []))
+    source_set = _signal_source_set(
+        signals,
+        source_type=str(payload.get("source_type", "")),
+        source_url=str(payload.get("source_url", "")),
+    )
 
     if not name or not company or not title:
         return "Lead must include a real name, title, and company."
@@ -836,6 +884,11 @@ def _validate_public_lead(payload: dict[str, Any]) -> str | None:
         return "Lead must include at least one concrete public signal."
     if len(signals) < max(1, config.MIN_SIGNAL_COUNT):
         return f"Lead must include at least {max(1, config.MIN_SIGNAL_COUNT)} signal(s)."
+    if len(source_set) < max(1, getattr(config, "MIN_DISTINCT_SIGNAL_SOURCES", 2)):
+        return (
+            f"Lead must include at least {max(1, getattr(config, 'MIN_DISTINCT_SIGNAL_SOURCES', 2))} "
+            "distinct signal sources."
+        )
     if not any([domain, source_url, public_profile_url]):
         return "Lead must include a verifiable company domain, public profile URL, or source URL."
     if source_url and _looks_placeholder(source_url):
@@ -940,6 +993,8 @@ def _score_components(
     if any(k in signal_text for k in ["migrating", "switching", "rfp", "looking for", "vendor", "buying"]):
         intent_strength += 20
     intent_strength += min(len(signals) * 4, 20)
+    intent_bonus, evidence_bonus_from_quality = _signal_quality_bonus(signals)
+    intent_strength += intent_bonus
 
     recency = 35
     # If timestamp fields are absent, assign neutral recency instead of optimistic.
@@ -963,6 +1018,8 @@ def _score_components(
     if work_location:
         evidence += 10
     evidence += _source_reliability_score(source_type, source_url)
+    evidence += evidence_bonus_from_quality
+    evidence += min(12, len(_signal_source_set(signals, source_type=source_type, source_url=source_url)) * 4)
     evidence += _country_scope_bonus({"work_location": work_location})
 
     learning_adjustment = get_outcome_score_adjustment(
@@ -1124,7 +1181,19 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
         deduped.append(item)
         if len(deduped) >= limit:
             break
-    return {"ok": True, "query": scoped, "count": len(deduped), "providers_used": providers, "results": deduped}
+    us_tokens = [" united states", " usa", " us ", " u.s.", " america", " atlanta", " georgia"]
+    us_filtered = [
+        item for item in deduped
+        if any(token in json.dumps(item, default=str).lower() for token in us_tokens)
+    ]
+    final_results = us_filtered if len(us_filtered) >= max(3, limit // 3) else deduped
+    return {
+        "ok": True,
+        "query": scoped,
+        "count": len(final_results),
+        "providers_used": providers,
+        "results": final_results[:limit],
+    }
 
 
 def _search_reddit_signals(query: str, subreddit: str = "", limit: int = 10) -> dict[str, Any]:
@@ -1652,7 +1721,7 @@ def _orchestrate_playbook(
     return {
         "ok": True,
         "objective": objective,
-        "selected_for_outreach": selected,
+        "selected_for_crm_handoff": selected,
         "selection_count": len(selected),
         "gates": {
             "icp_min_score": config.ICP_MIN_SCORE,

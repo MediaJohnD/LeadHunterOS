@@ -23,10 +23,10 @@ Rules:
 1) Use public signals first, then enrichment, then ranking/orchestration.
 2) US scope only: {config.TARGET_COUNTRY}; exclude unclear/non-US leads.
 3) Never invent data. No placeholders.
-4) Enforce SMB ICP hard filters before save/outreach (titles, industries, company-size range).
+4) Enforce SMB ICP hard filters before save/CRM handoff (titles, industries, company-size range).
 5) Save only leads meeting gates: icp_score >= {config.ICP_MIN_SCORE}.
 6) Outreach generation is disabled; prepare CRM handoff notes instead.
-7) Max 3 tool calls per turn.
+7) Max 3 tool calls per turn. Before FINAL ANSWER, run discovery -> rank_leads -> orchestrate_playbook.
 
 Tool call format:
 <tool_call>{{"name":"tool_name","arguments":{{...}}}}</tool_call>
