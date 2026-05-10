@@ -84,6 +84,11 @@ except Exception as exc:  # pragma: no cover
     search_orcid_profiles = None
     search_glassdoor_news = None
 
+try:
+    from ddgs import DDGS
+except Exception:  # pragma: no cover
+    DDGS = None
+
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -322,6 +327,18 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_duckduckgo_instant",
         "description": "Search DuckDuckGo Instant Answer API for broad public web snippets and related topics.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max results to return. Default 10."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "search_duckduckgo_signals",
+        "description": "Search DuckDuckGo public web/news via DDGS (preferred) with Instant API fallback.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1362,7 +1379,7 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
 
     # Optional free/no-login broadening only after top 1-5
     if len(merged) < max(1, int(getattr(config, "MIN_DISCOVERY_RESULTS", 8))):
-        ddg = _search_duckduckgo_instant(scoped, limit=max(5, target // 2))
+        ddg = _search_duckduckgo_signals(scoped, limit=max(5, target // 2))
         if ddg.get("ok"):
             merged.extend(_slice_results(ddg.get("results", []), target))
             providers.append("duckduckgo")
@@ -1434,6 +1451,57 @@ def _search_duckduckgo_instant(query: str, limit: int = 10) -> dict[str, Any]:
             if len(results) >= max(1, limit):
                 break
     return {"ok": True, "results": results[: max(1, limit)]}
+
+
+def _search_duckduckgo_signals(query: str, limit: int = 10) -> dict[str, Any]:
+    scoped = _normalize_signal_query(query)
+    max_results = max(1, limit)
+    if DDGS is None:
+        fallback = _search_duckduckgo_instant(scoped, limit=max_results)
+        if fallback.get("ok"):
+            fallback["provider"] = "duckduckgo_instant_fallback"
+        return fallback
+    rows: list[dict[str, Any]] = []
+    try:
+        with DDGS() as ddgs:
+            text_hits = list(ddgs.text(scoped, max_results=max_results))
+            for hit in text_hits:
+                rows.append(
+                    {
+                        "source": "duckduckgo_ddgs_text",
+                        "title": str(hit.get("title", "")).strip(),
+                        "snippet": str(hit.get("body", "")).strip(),
+                        "source_url": str(hit.get("href", "")).strip(),
+                    }
+                )
+            news_hits = list(ddgs.news(scoped, max_results=max(1, max_results // 2)))
+            for hit in news_hits:
+                rows.append(
+                    {
+                        "source": "duckduckgo_ddgs_news",
+                        "title": str(hit.get("title", "")).strip(),
+                        "snippet": str(hit.get("body", "")).strip(),
+                        "source_url": str(hit.get("url", "")).strip(),
+                    }
+                )
+    except Exception as exc:
+        logger.debug(f"DDGS search failed, falling back to instant API: {exc}")
+        fallback = _search_duckduckgo_instant(scoped, limit=max_results)
+        if fallback.get("ok"):
+            fallback["provider"] = "duckduckgo_instant_fallback"
+        return fallback
+
+    cleaned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        key = f"{row.get('title', '')}|{row.get('source_url', '')}"[:300]
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(row)
+        if len(cleaned) >= max_results:
+            break
+    return {"ok": True, "provider": "duckduckgo_ddgs", "results": cleaned}
 
 
 def _search_google_xray_linkedin(query: str, limit: int = 20) -> dict[str, Any]:
@@ -2141,6 +2209,7 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         "search_signals": _search_signals,
         "search_reddit_signals": _search_reddit_signals,
         "search_news_signals": _search_news_signals,
+        "search_duckduckgo_signals": _search_duckduckgo_signals,
         "search_duckduckgo_instant": _search_duckduckgo_instant,
         "search_github_signals": _search_github_signals,
         "search_hn_signals": _search_hn_signals,

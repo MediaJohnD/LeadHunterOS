@@ -94,7 +94,7 @@ Policy: no paid APIs until free/no-login sources are exhausted.
 | 6 | BuiltWith / Wappalyzer | Missing | Planned tech-stack enrichment source |
 | 7 | G2 / Capterra | Missing | Planned review and buyer pain layer |
 | 8 | X/Twitter company posts | Missing | Planned company activity pulse source |
-| 9 | DuckDuckGo Instant API | Implemented | Lightweight broad-web signal recall |
+| 9 | DuckDuckGo (DDGS + Instant API fallback) | Implemented | DDGS text/news preferred, Instant API fallback |
 | 10 | OpenCorporates / YellowPages | Missing | Planned firmographic verification layer |
 
 Composite scoring uses deterministic components (`icp_fit`, `intent_strength`, `recency`, `evidence_confidence`) and blocks low-evidence leads at gate time.
