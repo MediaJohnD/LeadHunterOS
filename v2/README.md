@@ -268,3 +268,31 @@ See `.env.example`. Key sections:
 - Metrics endpoint for dashboards: `python v2/scripts/serve_metrics.py` then scrape `http://localhost:9464/metrics`
 - Ops dashboard pack: [v2/ops/README.md](/D:/Codex/LeadHunterOS-audit/v2/ops/README.md)
 - Detailed guide: [PRODUCTION_READINESS.md](/D:/Codex/LeadHunterOS-audit/v2/docs/PRODUCTION_READINESS.md)
+
+## Daily 10 HOT Leads Operations (Production)
+
+Use deterministic batch mode for daily sales output (not free-form chat loop):
+
+```bash
+python v2/scripts/run_daily_hot_batch.py --gating v2/ops/hot_warm_gating.yaml --target-hot 10 --target-warm 100
+```
+
+Pass/fail contract:
+- exit `0` when `saved_hot >= target_hot`
+- exit `2` when `saved_hot < target_hot`
+
+Generate digest artifacts for inbox handoff:
+
+```bash
+python v2/scripts/generate_morning_digest.py --hot-limit 10 --warm-limit 100
+```
+
+This writes:
+- `v2/reports/morning_digest.md`
+- `v2/reports/morning_digest.json`
+
+Windows scheduler setup (daily):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File v2\scripts\schedule_morning_hot_leads.ps1 -RepoPath "D:\Codex\LeadHunterOS-audit\v2" -Hour 6 -Minute 30
+```
