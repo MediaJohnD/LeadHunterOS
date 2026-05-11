@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, Clock3, ShieldAlert, Sparkles, X } from "lucide-react";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 type ApprovalState = "pending" | "approved" | "escalated" | "snoozed" | "rejected";
 
@@ -36,7 +37,9 @@ type QualifiedPayload = {
     attribution_confidence: number;
     decision_reason: string;
     created_at: string;
+    signal_count: number;
   }>;
+  velocity?: Array<{ day: string; leads: number }>;
   kpis?: Array<{ metric: string; value: string | number }>;
   runtime?: RuntimeLane[];
   executive_feed?: string[];
@@ -94,6 +97,7 @@ export function CommandCenter() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [policy, setPolicy] = useState<HermesPolicy | null>(null);
+  const [velocity, setVelocity] = useState<Array<{ day: string; leads: number }>>([]);
 
   useEffect(() => {
     let mounted = true;
@@ -110,26 +114,17 @@ export function CommandCenter() {
             account: row.company_name,
             action: `${row.title || "contact"} · ${row.full_name || "Unknown contact"}`,
             confidence: Math.round(Number(row.icp_score ?? 0)),
-            signal_count: Math.max(1, Math.round(Number(row.attribution_confidence ?? 0))),
+            signal_count: Math.max(0, Number(row.signal_count ?? 0)),
             is_qualified: true,
             state: "pending",
           }),
         );
 
       setApprovals(qualifiedApprovals);
-      setKpis([
-        { metric: "Qualified Leads (DB)", value: qualifiedApprovals.length },
-        { metric: "Avg Confidence", value: qualifiedApprovals.length ? Math.round(qualifiedApprovals.reduce((a, b) => a + b.confidence, 0) / qualifiedApprovals.length) : 0 },
-      ]);
-      setRuntime([
-        { lane: "Lead Store", status: "Healthy", latency: "local" },
-        { lane: "Hermes Bridge", status: "Healthy", latency: "local" },
-      ]);
-      setExecutiveFeed(
-        (payload.leads ?? []).slice(0, 6).map(
-          (row) => `${row.company_name}: ${row.decision_reason || row.signal_summary || "Qualified lead saved."}`,
-        ),
-      );
+      setKpis(payload.kpis ?? []);
+      setRuntime(payload.runtime ?? []);
+      setExecutiveFeed(payload.executive_feed ?? []);
+      setVelocity(payload.velocity ?? []);
       setPolicy(await getPolicy());
       setLoading(false);
     })();
@@ -183,11 +178,33 @@ export function CommandCenter() {
     <div className="grid grid-cols-12 gap-4">
       <section className="col-span-12 rounded-lg border border-zinc-800 bg-zinc-900 p-4 lg:col-span-7">
         <h2 className="mb-3 text-sm font-semibold text-zinc-200">Signal Velocity</h2>
-        <div className="rounded-md border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-300">
-          {loading
-            ? "Loading qualified signal telemetry..."
-            : "No chart is shown until qualified trend telemetry is provided by Hermes."}
-        </div>
+        {loading ? (
+          <div className="rounded-md border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-300">
+            Loading lead velocity...
+          </div>
+        ) : velocity.length === 0 ? (
+          <div className="rounded-md border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-300">
+            No saved lead activity yet.
+          </div>
+        ) : (
+          <div className="h-44 rounded-md border border-zinc-800 bg-zinc-950 p-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={velocity}>
+                <defs>
+                  <linearGradient id="leadVelocity" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                <XAxis dataKey="day" tick={{ fill: "#a1a1aa", fontSize: 11 }} />
+                <YAxis allowDecimals={false} tick={{ fill: "#a1a1aa", fontSize: 11 }} />
+                <Tooltip />
+                <Area type="monotone" dataKey="leads" stroke="#10b981" fill="url(#leadVelocity)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </section>
 
       <section className="col-span-12 rounded-lg border border-zinc-800 bg-zinc-900 p-4 lg:col-span-5">
@@ -318,7 +335,7 @@ export function CommandCenter() {
         ) : (
           <div className="space-y-2">
             <AnimatePresence initial={false}>
-              {approvals.map((row, idx) => (
+              {approvals.map((row) => (
                 <motion.div
                   key={row.id}
                   layout
