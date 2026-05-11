@@ -80,7 +80,12 @@ def show_replay(path: str) -> None:
     print("=========================\n")
 
 
-def run_once(objective: str, llm_backend: str | None = None, print_timeline: bool = False) -> None:
+def run_once(
+    objective: str,
+    llm_backend: str | None = None,
+    print_timeline: bool = False,
+    strict_pass: bool = False,
+) -> int:
     """Run one agent cycle."""
     logger.info(f"Starting LeadHunterOS agent cycle | {datetime.now(timezone.utc).isoformat()}")
     logger.info(f"Objective: {objective[:120]}..." if len(objective) > 120 else f"Objective: {objective}")
@@ -94,6 +99,10 @@ def run_once(objective: str, llm_backend: str | None = None, print_timeline: boo
         if config.EXPORT_LEADS_TO_CSV:
             export = export_latest_leads_csv(config.LEADS_CSV_PATH, limit=config.LEAD_MAX_RESULTS)
             logger.info(f"CSV export complete: {export['path']} ({export['rows']} rows)")
+        if strict_pass and (result.get("failed") or int(result.get("leads_saved", 0)) < int(getattr(config, "RUN_FAIL_MIN_SAVED_LEADS", 3))):
+            logger.error("Strict pass failed: run did not meet hard save contract.")
+            return 2
+        return 0
     except Exception as e:
         logger.error(f"Agent cycle failed: {e}")
         raise
@@ -189,6 +198,11 @@ def main() -> None:
         help="Print a human-readable run timeline after execution",
     )
     parser.add_argument(
+        "--strict-pass",
+        action="store_true",
+        help="Exit non-zero unless run meets hard save contract.",
+    )
+    parser.add_argument(
         "--replay",
         type=str,
         default="",
@@ -220,7 +234,8 @@ def main() -> None:
     if args.schedule:
         run_scheduled(args.objective, args.interval, llm_backend=args.llm, print_timeline=args.timeline)
     else:
-        run_once(args.objective, llm_backend=args.llm, print_timeline=args.timeline)
+        rc = run_once(args.objective, llm_backend=args.llm, print_timeline=args.timeline, strict_pass=args.strict_pass)
+        sys.exit(rc)
 
 
 if __name__ == "__main__":

@@ -1,65 +1,73 @@
 {
-  "generated_at": "2026-05-10T22:26:11.128800+00:00",
+  "generated_at": "2026-05-11T02:30:39.020393+00:00",
   "checks": {
     "unit_tests": {
-      "ok": true
+      "ok": false
     },
     "eval_harness": {
-      "ok": true
+      "ok": false
     },
     "stress_10x": {
-      "ok": true,
-      "pass_rate": 1.0,
-      "pass_count": 10,
+      "ok": false,
+      "pass_rate": 0.0,
+      "pass_count": 0,
       "run_count": 10,
       "runs": [
         {
           "run": 1,
-          "ok": true
+          "ok": false
         },
         {
           "run": 2,
-          "ok": true
+          "ok": false
         },
         {
           "run": 3,
-          "ok": true
+          "ok": false
         },
         {
           "run": 4,
-          "ok": true
+          "ok": false
         },
         {
           "run": 5,
-          "ok": true
+          "ok": false
         },
         {
           "run": 6,
-          "ok": true
+          "ok": false
         },
         {
           "run": 7,
-          "ok": true
+          "ok": false
         },
         {
           "run": 8,
-          "ok": true
+          "ok": false
         },
         {
           "run": 9,
-          "ok": true
+          "ok": false
         },
         {
           "run": 10,
-          "ok": true
+          "ok": false
         }
       ]
+    },
+    "strict_pass_run": {
+      "ok": false
+    },
+    "no_placeholder_ui": {
+      "ok": true
     }
   },
   "thresholds": {
     "unit_tests_must_pass": true,
     "eval_harness_must_pass": true,
-    "stress_runs_min_pass_rate": 0.9
+    "stress_runs_min_pass_rate": 0.9,
+    "strict_pass_run_must_pass": true,
+    "no_placeholder_ui_text": true
   },
-  "release_green": true
+  "release_green": false
 }

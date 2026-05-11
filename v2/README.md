@@ -296,3 +296,11 @@ Windows scheduler setup (daily):
 ```powershell
 powershell -ExecutionPolicy Bypass -File v2\scripts\schedule_morning_hot_leads.ps1 -RepoPath "D:\Codex\LeadHunterOS-audit\v2" -Hour 6 -Minute 30
 ```
+
+## Phase 2 Hardening (24/7 Reliability)
+
+- Deterministic orchestration default: `v2/agent/hermes_agent.py`
+- Hard run contract (`--strict-pass`): `v2/run_agent.py`
+- Watchdog heartbeat / error budget: `python v2/scripts/run_watchdog_cycle.py --cycles 3 --error-budget 0.2`
+- Beat-field gate includes strict-pass + no-placeholder UI checks:
+  `python v2/scripts/run_beat_field_gate.py`

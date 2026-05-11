@@ -39,6 +39,8 @@ def main() -> int:
             "unit_tests_must_pass": True,
             "eval_harness_must_pass": True,
             "stress_runs_min_pass_rate": 0.9,
+            "strict_pass_run_must_pass": True,
+            "no_placeholder_ui_text": True,
         },
     }
 
@@ -67,10 +69,32 @@ def main() -> int:
         "runs": stress_details,
     }
 
+    rc_strict, out_strict = _run(
+        [
+            "python",
+            "v2/run_agent.py",
+            "--strict-pass",
+            "--objective",
+            "Find and save qualified US SMB leads with deterministic pipeline.",
+        ]
+    )
+    results["checks"]["strict_pass_run"] = {"ok": rc_strict == 0}
+
+    ui_file = Path("v2/ui/components/dashboard/command-center.tsx")
+    ui_text = ui_file.read_text(encoding="utf-8") if ui_file.exists() else ""
+    placeholder_markers = [
+        "No chart is shown until qualified trend telemetry is provided by Hermes.",
+        "SIGNALS: 100",
+    ]
+    has_placeholder = any(marker in ui_text for marker in placeholder_markers)
+    results["checks"]["no_placeholder_ui"] = {"ok": not has_placeholder}
+
     release_green = bool(
         results["checks"]["unit_tests"]["ok"]
         and results["checks"]["eval_harness"]["ok"]
         and results["checks"]["stress_10x"]["ok"]
+        and results["checks"]["strict_pass_run"]["ok"]
+        and results["checks"]["no_placeholder_ui"]["ok"]
     )
     results["release_green"] = release_green
 
@@ -82,4 +106,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

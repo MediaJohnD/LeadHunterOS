@@ -15,6 +15,7 @@ def main() -> int:
         ["python", "-m", "py_compile", "v2/config.py", "v2/run_agent.py", "v2/agent/hermes_agent.py", "v2/agent/llm_router.py", "v2/agent/tools.py", "v2/agent/database.py"],
         ["python", "-m", "unittest", "discover", "-s", "v2/tests", "-p", "test_*.py", "-q"],
         ["python", "v2/evals/harness.py"],
+        ["python", "v2/scripts/run_watchdog_cycle.py", "--cycles", "2", "--error-budget", "0.5"],
         ["python", "v2/scripts/run_beat_field_gate.py"],
     ]
     for cmd in commands:
