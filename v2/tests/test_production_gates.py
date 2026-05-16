@@ -162,8 +162,9 @@ class ProductionGatesTests(unittest.TestCase):
             report = ROOT / "evals" / "daily_root_cause_report.json"
             self.assertTrue(report.exists())
             payload = report.read_text(encoding="utf-8")
-            self.assertIn('"saved_hot": 3', payload)
-            self.assertIn('"target_hot": 10', payload)
+            parsed = __import__("json").loads(payload)
+            self.assertEqual(int(parsed.get("saved_hot", -1)), 3)
+            self.assertEqual(int(parsed.get("target_hot", -1)), 10)
 
     def test_ssl_fallback_probe_is_instrumented(self) -> None:
         module = _load_daily_batch_module()

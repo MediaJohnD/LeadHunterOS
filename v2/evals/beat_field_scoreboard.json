@@ -1,62 +1,62 @@
 {
-  "generated_at": "2026-05-11T02:30:39.020393+00:00",
+  "generated_at": "2026-05-16T03:10:51.978684+00:00",
   "checks": {
     "unit_tests": {
-      "ok": false
+      "ok": true
     },
     "eval_harness": {
-      "ok": false
+      "ok": true
     },
     "stress_10x": {
-      "ok": false,
-      "pass_rate": 0.0,
-      "pass_count": 0,
+      "ok": true,
+      "pass_rate": 1.0,
+      "pass_count": 10,
       "run_count": 10,
       "runs": [
         {
           "run": 1,
-          "ok": false
+          "ok": true
         },
         {
           "run": 2,
-          "ok": false
+          "ok": true
         },
         {
           "run": 3,
-          "ok": false
+          "ok": true
         },
         {
           "run": 4,
-          "ok": false
+          "ok": true
         },
         {
           "run": 5,
-          "ok": false
+          "ok": true
         },
         {
           "run": 6,
-          "ok": false
+          "ok": true
         },
         {
           "run": 7,
-          "ok": false
+          "ok": true
         },
         {
           "run": 8,
-          "ok": false
+          "ok": true
         },
         {
           "run": 9,
-          "ok": false
+          "ok": true
         },
         {
           "run": 10,
-          "ok": false
+          "ok": true
         }
       ]
     },
     "strict_pass_run": {
-      "ok": false
+      "ok": true
     },
     "no_placeholder_ui": {
       "ok": true
@@ -69,5 +69,5 @@
     "strict_pass_run_must_pass": true,
     "no_placeholder_ui_text": true
   },
-  "release_green": false
+  "release_green": true
 }

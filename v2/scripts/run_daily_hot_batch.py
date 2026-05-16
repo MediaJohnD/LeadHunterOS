@@ -806,7 +806,7 @@ def main() -> int:
     }
     if len(candidates) == 0:
         summary["upstream_connectivity_probe"] = _probe_upstream_connectivity()
-    out_dir = Path("evals")
+    out_dir = ROOT / "evals"
     out_dir.mkdir(parents=True, exist_ok=True)
     root_cause_path = out_dir / "daily_root_cause_report.json"
     root_cause_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
