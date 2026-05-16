@@ -27,10 +27,18 @@ def _mk_signals(count: int = 24) -> list[dict]:
     sources = ["news", "reddit", "github", "ddg", "jobspy"]
     for i in range(count):
         source = sources[i % len(sources)]
+        if source == "news":
+            signal_type = "news_article"
+        elif source == "reddit":
+            signal_type = "reddit_post"
+        elif source == "github":
+            signal_type = "github_repo"
+        else:
+            signal_type = "job_posting"
         rows.append(
             {
                 "source": source,
-                "type": "news_article" if source == "news" else "job_posting",
+                "type": signal_type,
                 "confidence": 0.9,
                 "url": f"https://example.com/{source}/{i}",
                 "title": f"{source} evidence {i}",
@@ -45,8 +53,8 @@ class ProductionGatesTests(unittest.TestCase):
         module = _load_daily_batch_module()
         candidates = [
             {
-                "name": f"Lead {i}",
-                "title": "operations manager",
+                "name": f"Jordan Smith {i}",
+                "title": "VP Operations",
                 "company": f"Company {i}",
                 "company_domain": f"company{i}.com",
                 "industry": "it services",
@@ -70,6 +78,16 @@ class ProductionGatesTests(unittest.TestCase):
                 module, "export_latest_leads_csv", return_value={"path": "leads_latest.csv", "rows": 10}
             ), patch.object(module, "dispatch_tool") as mock_dispatch:
                 def _dispatch(name: str, args: dict):
+                    if name == "enrich_lead_waterfall":
+                        return {
+                            "ok": True,
+                            "data": {
+                                "name": str(args.get("name", "Jordan Smith")),
+                                "title": "VP Operations",
+                                "email": f"vp{args.get('company', 'company').lower().replace(' ', '')}@example.com",
+                                "linkedin_url": f"https://linkedin.com/in/{str(args.get('company', 'company')).lower().replace(' ', '-')}",
+                            },
+                        }
                     if name == "rank_leads":
                         return {"ok": True, "results": args.get("leads", [])}
                     if name == "score_lead":
@@ -102,8 +120,8 @@ class ProductionGatesTests(unittest.TestCase):
         module = _load_daily_batch_module()
         candidates = [
             {
-                "name": f"Lead {i}",
-                "title": "operations manager",
+                "name": f"Jordan Smith {i}",
+                "title": "VP Operations",
                 "company": f"Company {i}",
                 "company_domain": f"company{i}.com",
                 "industry": "it services",
@@ -129,6 +147,16 @@ class ProductionGatesTests(unittest.TestCase):
                 save_counter = {"count": 0}
 
                 def _dispatch(name: str, args: dict):
+                    if name == "enrich_lead_waterfall":
+                        return {
+                            "ok": True,
+                            "data": {
+                                "name": str(args.get("name", "Jordan Smith")),
+                                "title": "VP Operations",
+                                "email": f"vp{args.get('company', 'company').lower().replace(' ', '')}@example.com",
+                                "linkedin_url": f"https://linkedin.com/in/{str(args.get('company', 'company')).lower().replace(' ', '-')}",
+                            },
+                        }
                     if name == "rank_leads":
                         return {"ok": True, "results": args.get("leads", [])}
                     if name == "score_lead":

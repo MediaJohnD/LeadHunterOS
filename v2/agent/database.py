@@ -223,6 +223,9 @@ def save_public_lead(payload: dict[str, Any]) -> dict[str, Any]:
     row = {
         "id": str(uuid.uuid4()),
         "full_name": payload.get("name"),
+        "email": payload.get("email"),
+        "phone": payload.get("phone"),
+        "linkedin_url": payload.get("linkedin_url"),
         "company_name": payload.get("company"),
         "company_domain": payload.get("company_domain"),
         "industry": payload.get("industry"),
@@ -247,6 +250,15 @@ def save_public_lead(payload: dict[str, Any]) -> dict[str, Any]:
 
     fallback_used = False
     try:
+        existing = _find_recent_duplicate_lead(engine, row)
+        if existing:
+            return {
+                "id": existing["id"],
+                "status": existing["status"],
+                "saved_at": now,
+                "database": engine.dialect.name,
+                "deduped": True,
+            }
         _insert_lead_row(engine, row)
         _upsert_entity_graph(engine, row)
     except SQLAlchemyError:
@@ -255,6 +267,15 @@ def save_public_lead(payload: dict[str, Any]) -> dict[str, Any]:
         fallback_used = True
         fallback_engine = _sqlite_fallback_engine()
         _ensure_sqlite_schema(fallback_engine)
+        existing = _find_recent_duplicate_lead(fallback_engine, row)
+        if existing:
+            return {
+                "id": existing["id"],
+                "status": existing["status"],
+                "saved_at": now,
+                "database": "sqlite_fallback",
+                "deduped": True,
+            }
         _insert_lead_row(fallback_engine, row)
         _upsert_entity_graph(fallback_engine, row)
 
@@ -266,18 +287,54 @@ def save_public_lead(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _find_recent_duplicate_lead(engine: Engine, row: dict[str, Any]) -> dict[str, Any] | None:
+    company_domain = str(row.get("company_domain") or "").strip().lower()
+    company_name = str(row.get("company_name") or "").strip().lower()
+    title = str(row.get("title") or "").strip().lower()
+    full_name = str(row.get("full_name") or "").strip().lower()
+    if not (company_domain or company_name):
+        return None
+    with engine.begin() as conn:
+        found = conn.execute(
+            text(
+                """
+                SELECT id, status
+                FROM leads
+                WHERE
+                  (
+                    (:company_domain != '' AND lower(company_domain) = :company_domain)
+                    OR
+                    (:company_name != '' AND lower(company_name) = :company_name)
+                  )
+                  AND (:title = '' OR lower(title) = :title)
+                  AND (:full_name = '' OR lower(full_name) = :full_name)
+                  AND datetime(created_at) >= datetime('now', '-24 hours')
+                ORDER BY datetime(created_at) DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "company_domain": company_domain,
+                "company_name": company_name,
+                "title": title,
+                "full_name": full_name,
+            },
+        ).mappings().first()
+    return dict(found) if found else None
+
+
 def _insert_lead_row(engine: Engine, row: dict[str, Any]) -> None:
     with engine.begin() as conn:
         raw_expr = "CAST(:raw_signal_data AS JSONB)" if engine.dialect.name == "postgresql" else ":raw_signal_data"
         conn.execute(text(f"""
             INSERT INTO leads (
-              id, full_name, company_name, company_domain, industry, employee_count,
+              id, full_name, email, phone, linkedin_url, company_name, company_domain, industry, employee_count,
               company_location, title, icp_score, icp_score_reason, icp_scored_at,
               status, signal_type, signal_source, signal_summary, raw_signal_data,
               attribution_source_family, attribution_confidence, decision_reason,
               notes, created_at, updated_at
             ) VALUES (
-              :id, :full_name, :company_name, :company_domain, :industry, :employee_count,
+              :id, :full_name, :email, :phone, :linkedin_url, :company_name, :company_domain, :industry, :employee_count,
               :company_location, :title, :icp_score, :icp_score_reason, :icp_scored_at,
               :status, :signal_type, :signal_source, :signal_summary, {raw_expr},
               :attribution_source_family, :attribution_confidence, :decision_reason,

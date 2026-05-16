@@ -27,6 +27,14 @@ import config
 from agent.database import export_latest_leads_csv, save_verified_lead
 from agent.tools import dispatch_tool
 
+ENTERPRISE_BLOCKLIST = {
+    "google", "alphabet", "amazon", "amazon.com", "microsoft", "apple", "meta", "bny", "nike",
+    "walmart", "costco", "target", "home depot", "lowe's", "jpmorgan", "bank of america",
+    "wells fargo", "citigroup", "goldman sachs", "morgan stanley", "oracle", "ibm", "intel",
+    "cisco", "boeing", "ford", "gm", "general motors", "pepsico", "coca-cola", "pfizer",
+    "johnson & johnson", "disney", "verizon", "at&t", "comcast", "unitedhealth", "lockheed martin",
+}
+
 if getattr(config, "INSECURE_TLS_FALLBACK", False):
     _orig_request = requests.sessions.Session.request
 
@@ -129,6 +137,32 @@ def _gate_lead(lead: dict[str, Any], gate: dict[str, Any]) -> tuple[bool, str]:
     if bool(gate.get("require_nonempty_reason", True)) and not reason:
         return False, "missing_decision_reason"
     return True, "ok"
+
+
+def _is_enterprise_or_non_smb(company: str, company_size: int) -> tuple[bool, str]:
+    normalized = (company or "").strip().lower()
+    if normalized in ENTERPRISE_BLOCKLIST:
+        return True, "enterprise_blocklist"
+    if company_size > 500:
+        return True, "size_gt_500"
+    return False, "ok"
+
+
+def _has_real_person_identity(lead: dict[str, Any]) -> bool:
+    name = str(lead.get("name") or "").strip().lower()
+    title = str(lead.get("title") or "").strip().lower()
+    if not name or "ops contact" in name or "contact" == name:
+        return False
+    if title in {"operations manager", "office manager", "sales manager", "customer success manager", "service manager"}:
+        return False
+    return True
+
+
+def _has_contact_channel(lead: dict[str, Any]) -> bool:
+    email = str(lead.get("email") or "").strip()
+    linkedin = str(lead.get("linkedin_url") or "").strip()
+    phone = str(lead.get("phone") or "").strip()
+    return bool(email or linkedin or phone)
 
 
 def _build_candidates(limit: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -608,8 +642,8 @@ def main() -> int:
 
     gate_cfg = _load_gate(Path(args.gating))
     hot_gate = dict(gate_cfg.get("hot", {}))
-    # Calibrated to current deterministic score distribution while keeping evidence strict.
-    hot_gate["min_icp_score"] = min(int(hot_gate.get("min_icp_score", 80)), 74)
+    # Keep HOT gate strict for real quality output.
+    hot_gate["min_icp_score"] = max(int(hot_gate.get("min_icp_score", 80)), 80)
     warm_gate = gate_cfg.get("warm", {})
 
     candidates, discovery_report = _build_candidates(args.candidate_limit)
@@ -630,6 +664,30 @@ def main() -> int:
     global_pool_signals = _pool_to_signal_objects(global_pool_rows, 120)
 
     for lead in ranked_rows:
+        blocked, blocked_reason = _is_enterprise_or_non_smb(
+            str(lead.get("company", "")),
+            int(lead.get("company_size", 50) or 50),
+        )
+        if blocked:
+            failed.append({"company": lead.get("company", ""), "reason": blocked_reason})
+            continue
+
+        enrichment = dispatch_tool(
+            "enrich_lead_waterfall",
+            {
+                "name": str(lead.get("name", "")),
+                "company": str(lead.get("company", "")),
+                "domain": str(lead.get("company_domain", "")),
+            },
+        )
+        if enrichment.get("ok"):
+            data = enrichment.get("data", {}) if isinstance(enrichment.get("data"), dict) else {}
+            lead["name"] = str(data.get("name") or lead.get("name") or "").strip()
+            lead["title"] = str(data.get("title") or lead.get("title") or "").strip()
+            lead["email"] = str(data.get("email") or "").strip()
+            lead["phone"] = str(data.get("phone") or "").strip()
+            lead["linkedin_url"] = str(data.get("linkedin_url") or "").strip()
+
         signal_target = max(22, hot_gate.get("min_signal_count", 20))
         signal_objects = _extract_company_signals_fast(str(lead.get("company", "")), signal_target)
         source_reports = []
@@ -734,12 +792,24 @@ def main() -> int:
                 }
             )
             continue
+        if not _has_real_person_identity(lead):
+            failed.append({"company": lead.get("company", ""), "reason": "missing_real_person"})
+            continue
+        if not _has_contact_channel(lead):
+            failed.append({"company": lead.get("company", ""), "reason": "missing_contact_channel"})
+            continue
+        if float(lead.get("budget_score", 0)) <= 0 or float(lead.get("urgency_score", 0)) <= 0:
+            failed.append({"company": lead.get("company", ""), "reason": "missing_budget_or_urgency_signal"})
+            continue
+
         ok_hot, hot_reason = _gate_lead(lead, hot_gate)
         if ok_hot:
+            lead["status"] = "qualified_hot"
             hot.append(lead)
             continue
         ok_warm, warm_reason = _gate_lead(lead, warm_gate)
         if ok_warm:
+            lead["status"] = "qualified_warm"
             warm.append(lead)
         else:
             failed.append({"company": lead.get("company", ""), "reason": f"{hot_reason}|{warm_reason}"})
