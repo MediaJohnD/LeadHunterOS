@@ -47,23 +47,27 @@ def search_jobs(
     if not site_names:
         site_names = ["linkedin", "indeed", "google"]
 
-    try:
-        logger.info(f"JobSpy searching: {search_term} in {location} via {site_names}")
-        jobs = scrape_jobs(
-            site_name=site_names,
-            search_term=search_term,
-            location=location,
-            results_wanted=results_wanted,
-            hours_old=hours_old,
-            country_indeed="USA",
-        )
+    total_jobs = 0
+    for site_name in site_names:
+        try:
+            logger.info(f"JobSpy searching: {search_term} in {location} via {site_name}")
+            jobs = scrape_jobs(
+                site_name=[site_name],
+                search_term=search_term,
+                location=location,
+                results_wanted=results_wanted,
+                hours_old=hours_old,
+                country_indeed="USA",
+            )
+        except Exception as e:
+            logger.warning(f"JobSpy search failed for {site_name}: {e}")
+            continue
 
         if jobs is None or len(jobs) == 0:
-            logger.warning("JobSpy returned no results")
-            return []
+            logger.info(f"JobSpy returned no rows for {site_name}")
+            continue
 
-        logger.info(f"JobSpy found {len(jobs)} job postings")
-
+        total_jobs += len(jobs)
         for _, row in jobs.iterrows():
             title = str(row.get("title", "") or "")
             company = str(row.get("company", "") or "")
@@ -71,14 +75,13 @@ def search_jobs(
             job_url = str(row.get("job_url", "") or "")
             description = str(row.get("description", "") or "")
             date_posted = str(row.get("date_posted", "") or "")
-            site = str(row.get("site", "") or "")
+            site = str(row.get("site", "") or site_name)
             min_amount = row.get("min_amount", None)
             max_amount = row.get("max_amount", None)
 
             if not company or not title:
                 continue
 
-            # Score buying signal from job description keywords
             desc_lower = description.lower()
             keyword_hits = [kw for kw in MEDIA_KEYWORDS if kw in desc_lower]
             buying_signal_score = min(len(keyword_hits) * 15, 60)
@@ -98,8 +101,10 @@ def search_jobs(
             }
             leads.append(lead)
 
-    except Exception as e:
-        logger.warning(f"JobSpy search failed: {e}")
+    if total_jobs == 0:
+        logger.warning("JobSpy returned no results across all configured sites")
+        return []
+    logger.info(f"JobSpy found {total_jobs} job postings across {site_names}")
 
     # Deduplicate by company name
     seen = set()

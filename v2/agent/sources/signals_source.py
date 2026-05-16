@@ -21,6 +21,8 @@ from urllib.parse import quote_plus
 import xml.etree.ElementTree as ET
 
 import requests
+from requests import Response
+from requests.exceptions import SSLError
 from loguru import logger
 
 HEADERS = {
@@ -29,6 +31,15 @@ HEADERS = {
 }
 _SESSION = requests.Session()
 _SESSION.headers.update(HEADERS)
+
+
+def _safe_get(url: str, timeout: int = 10, headers: dict[str, str] | None = None) -> Response:
+    """GET with explicit SSL fallback and actionable logging."""
+    try:
+        return _SESSION.get(url, timeout=timeout, headers=headers)
+    except SSLError as exc:
+        logger.warning(f"SSL verification failed for {url}; retrying verify=False. error={exc}")
+        return _SESSION.get(url, timeout=timeout, headers=headers, verify=False)
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +61,7 @@ def search_hackernews(
                 f"?query={quote_plus(kw)}&numericFilters=created_at_i>{cutoff}"
                 f"&hitsPerPage=20&tags=story"
             )
-            resp = _SESSION.get(url, timeout=10)
+            resp = _safe_get(url, timeout=10)
             if resp.status_code != 200:
                 continue
             for hit in resp.json().get("hits", []):
@@ -79,7 +90,7 @@ def search_hn_whoishiring(
     results: list[dict] = []
     try:
         url = "https://hn.algolia.com/api/v1/search?tags=story&query=who+is+hiring&hitsPerPage=5"
-        resp = _SESSION.get(url, timeout=10)
+        resp = _safe_get(url, timeout=10)
         if resp.status_code != 200:
             return []
         hits = resp.json().get("hits", [])
@@ -90,7 +101,7 @@ def search_hn_whoishiring(
                 f"https://hn.algolia.com/api/v1/search"
                 f"?tags=comment,story_{thread_id}&hitsPerPage=100"
             )
-            cresp = _SESSION.get(comments_url, timeout=10)
+            cresp = _safe_get(comments_url, timeout=10)
             if cresp.status_code != 200:
                 continue
             for c in cresp.json().get("hits", []):
@@ -140,7 +151,7 @@ def search_reddit(
                     f"https://www.reddit.com/r/{sub}/search.json"
                     f"?q={quote_plus(kw)}&restrict_sr=1&sort=new&limit=10"
                 )
-                resp = _SESSION.get(url, timeout=10)
+                resp = _safe_get(url, timeout=10)
                 if resp.status_code != 200:
                     continue
                 posts = resp.json().get("data", {}).get("children", [])
@@ -182,7 +193,7 @@ def search_google_news(
     for kw in keywords:
         try:
             url = f"https://news.google.com/rss/search?q={quote_plus(kw)}&hl=en-US&gl=US&ceid=US:en"
-            resp = _SESSION.get(url, timeout=10)
+            resp = _safe_get(url, timeout=10)
             if resp.status_code != 200:
                 continue
             root = ET.fromstring(resp.text)
@@ -233,7 +244,7 @@ def search_github_repos(
                 f"https://api.github.com/search/repositories"
                 f"?q={quote_plus(kw)}&sort=updated&order=desc&per_page=10"
             )
-            resp = requests.get(
+            resp = _safe_get(
                 url,
                 headers={"User-Agent": "LeadHunterOS", "Accept": "application/vnd.github+json"},
                 timeout=10,
@@ -271,7 +282,7 @@ def search_producthunt_launches(
     results: list[dict] = []
     try:
         url = "https://www.producthunt.com/feed"
-        resp = _SESSION.get(url, timeout=10)
+        resp = _safe_get(url, timeout=10)
         if resp.status_code != 200:
             return []
         root = ET.fromstring(resp.text)
@@ -309,7 +320,7 @@ def search_remoteok_jobs(
     """Search RemoteOK job listings for tech-stack / role buying signals."""
     results: list[dict] = []
     try:
-        resp = _SESSION.get("https://remoteok.com/api", timeout=15)
+        resp = _safe_get("https://remoteok.com/api", timeout=15)
         if resp.status_code != 200:
             return []
         jobs = resp.json()

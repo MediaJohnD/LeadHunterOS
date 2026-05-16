@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -1425,75 +1426,112 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
     scoped = _normalize_signal_query(query)
     merged: list[Any] = []
     providers: list[str] = []
+    source_reports: list[dict[str, Any]] = []
     target = max(1, limit)
     min_hits = max(3, int(target * 0.9))
 
+    def _call_source(source_name: str, fn: Any, **kwargs: Any) -> dict[str, Any]:
+        t0 = time.perf_counter()
+        try:
+            out = fn(**kwargs)
+        except Exception as exc:
+            source_reports.append(
+                {
+                    "source": source_name,
+                    "ok": False,
+                    "count": 0,
+                    "error_class": exc.__class__.__name__,
+                    "error": str(exc)[:500],
+                    "duration_ms": int((time.perf_counter() - t0) * 1000),
+                }
+            )
+            return {"ok": False, "error": f"{source_name}_exception:{exc}"}
+        rows = _slice_results(out.get("results", []), target) if out.get("ok") else []
+        source_reports.append(
+            {
+                "source": source_name,
+                "ok": bool(out.get("ok")),
+                "count": len(rows),
+                "error_class": "" if out.get("ok") else "SourceError",
+                "error": "" if out.get("ok") else str(out.get("error", "unknown_error"))[:500],
+                "duration_ms": int((time.perf_counter() - t0) * 1000),
+            }
+        )
+        return out
+
     # Ranked waterfall: intent strength > coverage > freshness > ease
     # 1) Google X-ray (LinkedIn jobs/profiles)
-    xray = _search_google_xray_linkedin(scoped, limit=max(5, target // 2))
+    xray = _call_source("google_xray_linkedin", _search_google_xray_linkedin, query=scoped, limit=max(5, target // 2))
     if xray.get("ok"):
         merged.extend(_slice_results(xray.get("results", []), target))
         providers.append("google_xray_linkedin")
 
     # 2) Crunchbase public
     if len(merged) < min_hits:
-        cb = _search_crunchbase_news(scoped, limit=max(5, target // 2))
+        cb = _call_source("crunchbase_public", _search_crunchbase_news, query=scoped, limit=max(5, target // 2))
         if cb.get("ok"):
             merged.extend(_slice_results(cb.get("results", []), target))
             providers.append("crunchbase_public")
 
     # 3) Indeed/Glassdoor signals (jobs + pain)
-    if len(merged) < min_hits:
-        jobs = _search_jobs_public(scoped, location=config.TARGET_COUNTRY, days_back=days_back, limit=max(5, target // 2))
+    if len(merged) < min_hits and not getattr(config, "INSECURE_TLS_FALLBACK", False):
+        jobs = _call_source(
+            "indeed_glassdoor_rss_jobs",
+            _search_jobs_public,
+            query=scoped,
+            location=config.TARGET_COUNTRY,
+            days_back=days_back,
+            limit=max(5, target // 2),
+        )
         if jobs.get("ok"):
             merged.extend(_slice_results(jobs.get("results", []), target))
             providers.append("jobs_velocity")
-        gd = _search_glassdoor_signals(scoped, limit=max(3, target // 3))
+        gd = _call_source("indeed_glassdoor_rss_reviews", _search_glassdoor_signals, query=scoped, limit=max(3, target // 3))
         if gd.get("ok"):
             merged.extend(_slice_results(gd.get("results", []), target))
             providers.append("glassdoor")
 
     # 4) News
     if len(merged) < min_hits:
-        news = _search_news_signals(scoped, days_back=days_back, limit=max(5, target // 2))
+        news = _call_source("newsapi_google", _search_news_signals, query=scoped, days_back=days_back, limit=max(5, target // 2))
         if news.get("ok"):
             merged.extend(_slice_results(news.get("results", []), target))
             providers.append("news")
 
     # 5) Reddit/GitHub
     if len(merged) < min_hits:
-        reddit = _search_reddit_signals(scoped, limit=max(5, target // 2))
+        reddit = _call_source("reddit_github_search_reddit", _search_reddit_signals, query=scoped, limit=max(5, target // 2))
         if reddit.get("ok"):
             merged.extend(_slice_results(reddit.get("results", []), target))
             providers.append("reddit")
-        gh = _search_github_signals(scoped, limit=max(5, target // 2))
+        gh = _call_source("reddit_github_search_github", _search_github_signals, query=scoped, limit=max(5, target // 2))
         if gh.get("ok"):
             merged.extend(_slice_results(gh.get("results", []), target))
             providers.append("github")
 
     # Optional free/no-login broadening only after top 1-5
     if len(merged) < max(1, int(getattr(config, "MIN_DISCOVERY_RESULTS", 8))):
-        ddg = _search_duckduckgo_signals(scoped, limit=max(5, target // 2))
+        ddg = _call_source("duckduckgo_instant", _search_duckduckgo_signals, query=scoped, limit=max(5, target // 2))
         if ddg.get("ok"):
             merged.extend(_slice_results(ddg.get("results", []), target))
             providers.append("duckduckgo")
     if len(merged) < target:
-        tech = _search_tech_stack_signals(scoped, limit=max(3, target // 3))
+        tech = _call_source("builtwith_wappalyzer", _search_tech_stack_signals, query=scoped, limit=max(3, target // 3))
         if tech.get("ok"):
             merged.extend(_slice_results(tech.get("results", []), target))
             providers.append("tech_stack")
     if len(merged) < target:
-        reviews = _search_review_signals(scoped, limit=max(3, target // 3))
+        reviews = _call_source("g2_capterra_reviews", _search_review_signals, query=scoped, limit=max(3, target // 3))
         if reviews.get("ok"):
             merged.extend(_slice_results(reviews.get("results", []), target))
             providers.append("reviews")
     if len(merged) < target:
-        firmo = _search_firmographic_signals(scoped, limit=max(3, target // 3))
+        firmo = _call_source("opencorp_yellowpages", _search_firmographic_signals, query=scoped, limit=max(3, target // 3))
         if firmo.get("ok"):
             merged.extend(_slice_results(firmo.get("results", []), target))
             providers.append("firmographics")
     if len(merged) < target:
-        xsig = _search_x_company_signals(scoped, limit=max(3, target // 3))
+        xsig = _call_source("twitter_company", _search_x_company_signals, query=scoped, limit=max(3, target // 3))
         if xsig.get("ok"):
             merged.extend(_slice_results(xsig.get("results", []), target))
             providers.append("x_company")
@@ -1533,6 +1571,8 @@ def _search_signals(query: str, days_back: int = 30, limit: int = 20) -> dict[st
         "no_paid_sources_used": True,
         "count": len(final_results),
         "providers_used": providers,
+        "source_reports": source_reports,
+        "source_failures": [r for r in source_reports if not r.get("ok")],
         "canonical_tags": _canonicalize_signal_tags([json.dumps(item, default=str) for item in final_results]),
         "results": final_results[:limit],
     }

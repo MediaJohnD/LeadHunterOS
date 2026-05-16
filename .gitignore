@@ -25,6 +25,7 @@ v2/leads_latest.csv
 v2/trajectories/
 v2/reports/
 telemetry.jsonl
+v2/evals/daily_root_cause_report.json
 
 # Logs
 *.log

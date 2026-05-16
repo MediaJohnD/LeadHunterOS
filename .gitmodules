@@ -1,0 +1,6 @@
+[submodule "v2/mira"]
+	path = v2/mira
+	url = https://github.com/DimiMikadze/mira
+[submodule "v2/nexus"]
+	path = v2/nexus
+	url = https://github.com/trilogy-group/nexus-agents

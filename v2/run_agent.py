@@ -10,8 +10,10 @@ No external scheduler needed - uses stdlib time.sleep() loop.
 """
 
 import argparse
+import json
 import sys
 import time
+import subprocess
 from datetime import datetime, timezone
 from loguru import logger
 
@@ -203,6 +205,11 @@ def main() -> None:
         help="Exit non-zero unless run meets hard save contract.",
     )
     parser.add_argument(
+        "--daily",
+        action="store_true",
+        help="Run deterministic daily HOT lead batch and digest generation.",
+    )
+    parser.add_argument(
         "--replay",
         type=str,
         default="",
@@ -229,6 +236,58 @@ def main() -> None:
         sys.exit(0)
     if args.replay:
         show_replay(args.replay)
+        sys.exit(0)
+
+    if args.daily:
+        batch_cmd = [
+            "python",
+            "scripts/run_daily_hot_batch.py",
+            "--gating",
+            "ops/hot_warm_gating.yaml",
+            "--target-hot",
+            str(getattr(config, "DAILY_HOT_TARGET", 10)),
+            "--target-warm",
+            str(getattr(config, "DAILY_WARM_TARGET", 100)),
+            "--objective",
+            args.objective,
+        ]
+        batch = subprocess.run(batch_cmd, cwd=".", capture_output=True, text=True, check=False)
+        print(batch.stdout)
+        if batch.returncode != 0:
+            alert_payload = {
+                "status": "FAILED",
+                "reason": "DAILY_HOT_TARGET_UNMET",
+                "target_hot": getattr(config, "DAILY_HOT_TARGET", 10),
+                "objective": args.objective,
+                "details": (batch.stdout or batch.stderr)[-3000:],
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+            print(alert_payload)
+            try:
+                from urllib.request import Request, urlopen
+                if getattr(config, "SLACK_WEBHOOK_URL", "").strip():
+                    req = Request(
+                        config.SLACK_WEBHOOK_URL,
+                        data=json.dumps({"text": f":rotating_light: LeadHunterOS daily failed\n```{json.dumps(alert_payload, indent=2)}```"}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urlopen(req, timeout=8):
+                        pass
+            except Exception as exc:
+                logger.error(f"Slack alert send failed: {exc}")
+            sys.exit(2)
+        digest = subprocess.run(
+            ["python", "scripts/generate_morning_digest.py", "--hot-limit", str(getattr(config, "DAILY_HOT_TARGET", 10)), "--warm-limit", str(getattr(config, "DAILY_WARM_TARGET", 100))],
+            cwd=".",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        print(digest.stdout)
+        if digest.returncode != 0:
+            logger.error(digest.stderr or "Morning digest generation failed")
+            sys.exit(3)
         sys.exit(0)
 
     if args.schedule:

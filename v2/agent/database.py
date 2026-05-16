@@ -154,6 +154,40 @@ def _ensure_sqlite_schema(engine: Engine) -> None:
             )
         """))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_suppressions_type_value ON suppressions(suppression_type, suppression_value)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS verified_leads (
+              id TEXT PRIMARY KEY,
+              company_name TEXT NOT NULL,
+              objective_hash TEXT,
+              signal_count INTEGER NOT NULL,
+              budget_score REAL NOT NULL,
+              urgency_score REAL NOT NULL,
+              politics_score REAL NOT NULL,
+              procurement_score REAL NOT NULL,
+              vendor_maturity_score REAL NOT NULL,
+              implementation_readiness_score REAL NOT NULL,
+              timing_score REAL NOT NULL,
+              revenue_probability_score REAL NOT NULL,
+              evidence_summary TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_verified_scores ON verified_leads(budget_score DESC, urgency_score DESC)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS lead_signals (
+              signal_id TEXT PRIMARY KEY,
+              verified_lead_id TEXT NOT NULL,
+              source TEXT NOT NULL,
+              signal_type TEXT NOT NULL,
+              confidence REAL NOT NULL,
+              source_url TEXT,
+              observed_at TEXT,
+              payload TEXT DEFAULT '{}',
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_lead_signals_lead ON lead_signals(verified_lead_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_lead_signals_source ON lead_signals(source)"))
         # Best-effort columns for attribution fields (safe for repeated runs).
         for ddl in [
             "ALTER TABLE leads ADD COLUMN attribution_source_family TEXT",
@@ -470,6 +504,77 @@ def export_latest_leads_csv(path: str, limit: int = 200) -> dict[str, Any]:
         "rows": len(rows),
         "database": "sqlite_fallback" if fallback_used else engine.dialect.name,
     }
+
+
+def save_verified_lead(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist a scored verified lead and all provenance signals."""
+    engine = _engine()
+    ensure_schema()
+    now = datetime.now(timezone.utc).isoformat()
+    lead_id = str(uuid.uuid4())
+    company = str(payload.get("company_name") or payload.get("company") or "").strip()
+    signals = payload.get("signals", [])
+    if not isinstance(signals, list):
+        signals = []
+    row = {
+        "id": lead_id,
+        "company_name": company,
+        "objective_hash": str(payload.get("objective_hash", "")),
+        "signal_count": int(payload.get("signal_count", len(signals))),
+        "budget_score": float(payload.get("budget_score", 0)),
+        "urgency_score": float(payload.get("urgency_score", 0)),
+        "politics_score": float(payload.get("politics_score", 0)),
+        "procurement_score": float(payload.get("procurement_score", 0)),
+        "vendor_maturity_score": float(payload.get("vendor_maturity_score", 0)),
+        "implementation_readiness_score": float(payload.get("implementation_readiness_score", 0)),
+        "timing_score": float(payload.get("timing_score", 0)),
+        "revenue_probability_score": float(payload.get("revenue_probability_score", 0)),
+        "evidence_summary": str(payload.get("evidence_summary", ""))[:2000],
+        "created_at": now,
+    }
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO verified_leads (
+                  id, company_name, objective_hash, signal_count, budget_score, urgency_score, politics_score,
+                  procurement_score, vendor_maturity_score, implementation_readiness_score, timing_score,
+                  revenue_probability_score, evidence_summary, created_at
+                ) VALUES (
+                  :id, :company_name, :objective_hash, :signal_count, :budget_score, :urgency_score, :politics_score,
+                  :procurement_score, :vendor_maturity_score, :implementation_readiness_score, :timing_score,
+                  :revenue_probability_score, :evidence_summary, :created_at
+                )
+                """
+            ),
+            row,
+        )
+        for signal in signals:
+            if not isinstance(signal, dict):
+                continue
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO lead_signals (
+                      signal_id, verified_lead_id, source, signal_type, confidence, source_url, observed_at, payload, created_at
+                    ) VALUES (
+                      :signal_id, :verified_lead_id, :source, :signal_type, :confidence, :source_url, :observed_at, :payload, :created_at
+                    )
+                    """
+                ),
+                {
+                    "signal_id": str(uuid.uuid4()),
+                    "verified_lead_id": lead_id,
+                    "source": str(signal.get("source", "unknown"))[:120],
+                    "signal_type": str(signal.get("type", "signal"))[:120],
+                    "confidence": float(signal.get("confidence", 0)),
+                    "source_url": str(signal.get("url", "") or signal.get("source_url", ""))[:1000],
+                    "observed_at": str(signal.get("observed_at", now)),
+                    "payload": _json(signal),
+                    "created_at": now,
+                },
+            )
+    return {"ok": True, "verified_lead_id": lead_id, "signals_saved": len(signals)}
 
 
 def record_tool_health_event(

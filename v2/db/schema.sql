@@ -95,6 +95,38 @@ CREATE TABLE IF NOT EXISTS signals (
 );
 
 -- ============================================================
+-- VERIFIED LEADS EVIDENCE GRAPH (commercial reality model)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS verified_leads (
+  id                             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_name                   TEXT NOT NULL,
+  objective_hash                 TEXT NOT NULL,
+  signal_count                   INTEGER NOT NULL CHECK (signal_count >= 20),
+  budget_score                   NUMERIC(5,2) NOT NULL CHECK (budget_score BETWEEN 0 AND 100),
+  urgency_score                  NUMERIC(5,2) NOT NULL CHECK (urgency_score BETWEEN 0 AND 100),
+  politics_score                 NUMERIC(5,2) NOT NULL CHECK (politics_score BETWEEN 0 AND 100),
+  procurement_score              NUMERIC(5,2) NOT NULL CHECK (procurement_score BETWEEN 0 AND 100),
+  vendor_maturity_score          NUMERIC(5,2) NOT NULL CHECK (vendor_maturity_score BETWEEN 0 AND 100),
+  implementation_readiness_score NUMERIC(5,2) NOT NULL CHECK (implementation_readiness_score BETWEEN 0 AND 100),
+  timing_score                   NUMERIC(5,2) NOT NULL CHECK (timing_score BETWEEN 0 AND 100),
+  revenue_probability_score      NUMERIC(5,2) NOT NULL CHECK (revenue_probability_score BETWEEN 0 AND 100),
+  evidence_summary               TEXT NOT NULL,
+  created_at                     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS lead_signal_events (
+  signal_id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  verified_lead_id  UUID NOT NULL REFERENCES verified_leads(id) ON DELETE CASCADE,
+  source            TEXT NOT NULL,
+  signal_type       TEXT NOT NULL,
+  confidence        NUMERIC(5,4) NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+  source_url        TEXT NOT NULL,
+  observed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  payload           JSONB NOT NULL DEFAULT '{}',
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_leads_email    ON leads(email) WHERE email IS NOT NULL;
@@ -104,6 +136,10 @@ CREATE INDEX IF NOT EXISTS idx_leads_icp      ON leads(icp_score DESC) WHERE icp
 CREATE INDEX IF NOT EXISTS idx_leads_created  ON leads(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_source ON signals(source);
 CREATE INDEX IF NOT EXISTS idx_signals_unproc ON signals(processed) WHERE processed = FALSE;
+CREATE INDEX IF NOT EXISTS idx_verified_scores ON verified_leads(budget_score DESC, urgency_score DESC);
+CREATE INDEX IF NOT EXISTS idx_verified_objective_hash ON verified_leads(objective_hash);
+CREATE INDEX IF NOT EXISTS idx_signal_events_lead ON lead_signal_events(verified_lead_id);
+CREATE INDEX IF NOT EXISTS idx_signal_events_source ON lead_signal_events(source);
 
 -- ============================================================
 -- AUTO-UPDATE updated_at
