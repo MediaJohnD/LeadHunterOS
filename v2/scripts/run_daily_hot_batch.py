@@ -165,6 +165,180 @@ def _has_contact_channel(lead: dict[str, Any]) -> bool:
     return bool(email or linkedin or phone)
 
 
+def _is_verified_email(email: str) -> bool:
+    value = (email or "").strip().lower()
+    if not value:
+        return False
+    if "@example." in value or value.endswith("@test.com"):
+        return False
+    return bool(re.match(r"^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$", value))
+
+
+def _matches_company_signal(signal: dict[str, Any], company: str, domain: str) -> bool:
+    c = (company or "").strip().lower()
+    d = (domain or "").strip().lower()
+    src = str(signal.get("source", "")).lower()
+    url = str(signal.get("url", "")).lower()
+    title = str(signal.get("title", "")).lower()
+    type_blob = str(signal.get("type", "")).lower()
+    text = f"{src} {url} {title} {type_blob}"
+    if d and d in text:
+        return True
+    tokens = [t for t in re.split(r"[^a-z0-9]+", c) if len(t) >= 4]
+    return any(t in text for t in tokens)
+
+
+def _name_from_linkedin_url(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        if "linkedin.com" not in host:
+            return ""
+        parts = [p for p in (parsed.path or "").split("/") if p]
+        if not parts or parts[0] != "in" or len(parts) < 2:
+            return ""
+        slug = parts[1]
+        clean = re.sub(r"[^a-z0-9\-]+", "", slug.lower()).strip("-")
+        tokens = [t for t in clean.split("-") if t and not t.isdigit()]
+        if len(tokens) < 2:
+            return ""
+        return " ".join(t.capitalize() for t in tokens[:3])
+    except Exception:
+        return ""
+
+
+def _resolve_contact_from_public_sources(
+    lead: dict[str, Any],
+    signal_objects: list[dict[str, Any]],
+) -> None:
+    def _clean_person_name(raw: str) -> str:
+        val = " ".join(str(raw or "").strip().split())
+        if not val:
+            return ""
+        parts = [p for p in re.split(r"\s+", val) if p]
+        if len(parts) < 2:
+            return ""
+        if len(parts) > 4:
+            parts = parts[:4]
+        if all(p.isupper() for p in parts):
+            parts = [p.capitalize() for p in parts]
+        return " ".join(parts)
+
+    company = str(lead.get("company", "")).strip()
+    domain = str(lead.get("company_domain", "")).strip()
+    title = str(lead.get("title", "")).strip()
+    # First pass: LinkedIn profile URLs from signal provenance.
+    for sig in signal_objects:
+        url = str(sig.get("url", "") or "")
+        if "linkedin.com/in/" not in url.lower():
+            continue
+        parsed_name = _name_from_linkedin_url(url)
+        if parsed_name:
+            lead["name"] = parsed_name
+            lead["linkedin_url"] = url
+            break
+
+    # Second pass: company-scoped LinkedIn x-ray if identity is still weak.
+    if not _has_real_person_identity(lead):
+        xray = dispatch_tool(
+            "search_google_xray_linkedin",
+            {"query": f"{company} operations manager", "limit": 12},
+        )
+        rows = xray.get("results", []) if xray.get("ok") else []
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                row_url = str(row.get("url") or row.get("source_url") or "").strip()
+                if "linkedin.com/in/" not in row_url.lower():
+                    continue
+                candidate_name = _name_from_linkedin_url(row_url)
+                if not candidate_name:
+                    candidate_name = _clean_person_name(str(row.get("name") or row.get("title") or ""))
+                if not candidate_name:
+                    continue
+                lead["name"] = candidate_name
+                lead["linkedin_url"] = row_url
+                row_title = str(row.get("headline") or row.get("title") or "").strip()
+                if row_title and "linkedin" not in row_title.lower():
+                    lead["title"] = row_title[:120]
+                break
+
+    # Third pass: team page no-login scrape for named operators.
+    if not _has_real_person_identity(lead):
+        team = dispatch_tool("scrape_team_page", {"company_name": company, "domain": domain, "limit": 12})
+        people = team.get("people", []) if team.get("ok") else []
+        for person in people:
+            if not isinstance(person, dict):
+                continue
+            person_name = _clean_person_name(str(person.get("name") or ""))
+            person_title = str(person.get("title") or "").strip()
+            person_linkedin = str(person.get("linkedin_url") or person.get("url") or "").strip()
+            blob = f"{person_title} {title}".lower()
+            if not person_name or len(person_name.split()) < 2:
+                continue
+            if not any(k in blob for k in ("operations", "revenue", "sales", "owner", "founder", "president", "general manager")):
+                continue
+            lead["name"] = person_name
+            if person_title:
+                lead["title"] = person_title
+            if person_linkedin and "linkedin.com" in person_linkedin.lower():
+                lead["linkedin_url"] = person_linkedin
+            break
+
+    # Fourth pass: public profile aggregator scoped to company/domain.
+    if not _has_real_person_identity(lead):
+        profiles = dispatch_tool(
+            "search_public_profiles",
+            {"query": f"{company} operations manager {domain}", "limit": 20},
+        )
+        rows = profiles.get("results", []) if profiles.get("ok") else []
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                sig = {
+                    "source": str(row.get("source") or ""),
+                    "url": str(row.get("source_url") or row.get("public_profile_url") or row.get("url") or ""),
+                    "title": str(row.get("headline") or row.get("title") or row.get("name") or ""),
+                    "type": str(row.get("signal_type") or ""),
+                }
+                if not _matches_company_signal(sig, company, domain):
+                    continue
+                candidate_name = _clean_person_name(str(row.get("name") or row.get("title") or ""))
+                if not candidate_name:
+                    continue
+                lead["name"] = candidate_name
+                profile_url = str(row.get("public_profile_url") or row.get("source_url") or "").strip()
+                if "linkedin.com" in profile_url.lower():
+                    lead["linkedin_url"] = profile_url
+                candidate_title = str(row.get("headline") or row.get("title") or "").strip()
+                if candidate_title and "linkedin" not in candidate_title.lower():
+                    lead["title"] = candidate_title[:120]
+                break
+
+    # Fifth pass: email generation + MX check.
+    if not _is_verified_email(str(lead.get("email", ""))) and _has_real_person_identity(lead) and domain:
+        candidates = dispatch_tool("generate_email_candidates_public", {"name": str(lead.get("name", "")), "domain": domain})
+        mx = dispatch_tool("verify_mx_public", {"domain": domain})
+        mx_result = mx.get("result")
+        if isinstance(mx_result, dict):
+            mx_valid = bool(mx_result.get("ok", True))
+        else:
+            mx_valid = bool(mx_result) if mx_result is not None else True
+        mx_ok = bool(mx.get("ok")) and mx_valid
+        if candidates.get("ok") and mx_ok:
+            rows = candidates.get("results", [])
+            if isinstance(rows, list) and rows:
+                first = rows[0]
+                if isinstance(first, dict):
+                    email = str(first.get("email") or "").strip()
+                else:
+                    email = str(first).strip()
+                if _is_verified_email(email):
+                    lead["email"] = email
+
+
 def _build_candidates(limit: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     blocked_hosts = {
         "linkedin.com", "www.linkedin.com", "news.ycombinator.com", "reddit.com", "www.reddit.com",
@@ -399,6 +573,11 @@ def _build_candidates(limit: int) -> tuple[list[dict[str, Any]], list[dict[str, 
     if len(candidates) == 0:
         fallbacks: list[tuple[str, dict[str, Any], str]] = [
             (
+                "search_signals",
+                dispatch_tool("search_signals", {"query": "US SMB operations manager hiring", "days_back": 30, "limit": max(30, limit)}),
+                "signals_waterfall",
+            ),
+            (
                 "search_public_profiles",
                 dispatch_tool("search_public_profiles", {"query": "US SMB operations manager hiring", "limit": max(20, limit)}),
                 "public_profiles",
@@ -412,11 +591,6 @@ def _build_candidates(limit: int) -> tuple[list[dict[str, Any]], list[dict[str, 
                 "search_crunchbase_news",
                 dispatch_tool("search_crunchbase_news", {"query": "US SMB funding hiring expansion", "limit": max(20, limit)}),
                 "crunchbase_news",
-            ),
-            (
-                "search_signals",
-                dispatch_tool("search_signals", {"query": "US SMB operations manager hiring", "days_back": 30, "limit": max(30, limit)}),
-                "signals_waterfall",
             ),
         ]
         for source_name, out, source_type in fallbacks:
@@ -548,15 +722,18 @@ def _pool_to_signal_objects(pool: list[dict[str, Any]], limit: int) -> list[dict
 def _supplement_with_distinct_sources(
     existing: list[dict[str, Any]],
     pool: list[dict[str, Any]],
+    company: str,
+    domain: str,
     target_count: int,
     min_sources: int,
 ) -> list[dict[str, Any]]:
+    filtered_pool = [s for s in pool if _matches_company_signal(s, company, domain)]
     out = list(existing)
     used = {str(s.get("source", "")).strip().lower() for s in out if str(s.get("source", "")).strip()}
     i = 0
     # First pass: increase source diversity
-    while len(used) < max(1, min_sources) and i < len(pool):
-        cand = pool[i]
+    while len(used) < max(1, min_sources) and i < len(filtered_pool):
+        cand = filtered_pool[i]
         i += 1
         src = str(cand.get("source", "")).strip().lower()
         if not src or src in used:
@@ -565,8 +742,8 @@ def _supplement_with_distinct_sources(
         used.add(src)
     # Second pass: fill up to signal target
     i = 0
-    while len(out) < target_count and i < len(pool):
-        out.append(pool[i])
+    while len(out) < target_count and i < len(filtered_pool):
+        out.append(filtered_pool[i])
         i += 1
     return out[:target_count]
 
@@ -611,21 +788,13 @@ def _probe_upstream_connectivity() -> list[dict[str, Any]]:
     ]
     rows: list[dict[str, Any]] = []
     for source, url in probes:
-        item = {"source": source, "url": url, "verify_true_ok": False, "verify_false_ok": False, "error_class": "", "error": ""}
+        item = {"source": source, "url": url, "verify_true_ok": False, "error_class": "", "error": ""}
         try:
             r = requests.get(url, timeout=10, verify=True, headers={"User-Agent": "LeadHunterOS/2.0"})
             item["verify_true_ok"] = bool(r.status_code < 500)
         except Exception as exc:
             item["error_class"] = exc.__class__.__name__
             item["error"] = str(exc)[:240]
-        try:
-            r2 = requests.get(url, timeout=10, verify=False, headers={"User-Agent": "LeadHunterOS/2.0"})
-            item["verify_false_ok"] = bool(r2.status_code < 500)
-        except Exception as exc2:
-            if not item["error_class"]:
-                item["error_class"] = exc2.__class__.__name__
-            if not item["error"]:
-                item["error"] = str(exc2)[:240]
         rows.append(item)
     return rows
 
@@ -650,20 +819,26 @@ def main() -> int:
     discovery_mode = "live"
     ranked = dispatch_tool("rank_leads", {"leads": candidates, "top_n": args.candidate_limit})
     ranked_rows = ranked.get("results", []) if ranked.get("ok") else []
-    max_eval = max(args.target_hot, 10)
-    ranked_rows = ranked_rows[:max_eval]
+    max_eval = max(args.target_hot * 20, 120)
+    ranked_rows = ranked_rows[: min(len(ranked_rows), max_eval)]
 
     hot: list[dict[str, Any]] = []
     warm: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     source_failures_by_source: dict[str, dict[str, Any]] = {}
 
-    pooled_query = args.objective + " " + " OR ".join([str(r.get("company", "")).strip() for r in ranked_rows[:10] if str(r.get("company", "")).strip()])
+    pooled_query = args.objective + " " + " OR ".join([str(r.get("company", "")).strip() for r in ranked_rows[:30] if str(r.get("company", "")).strip()])
     global_pool_out = dispatch_tool("search_signals", {"query": pooled_query, "days_back": 30, "limit": 300})
     global_pool_rows = list(global_pool_out.get("results", [])) if global_pool_out.get("ok") else []
     global_pool_signals = _pool_to_signal_objects(global_pool_rows, 120)
 
     for lead in ranked_rows:
+        if len(hot) >= args.target_hot:
+            break
+        ranked_icp = int(lead.get("icp_score", 0) or 0)
+        if ranked_icp and ranked_icp < max(60, int(hot_gate.get("min_icp_score", 80)) - 10):
+            failed.append({"company": lead.get("company", ""), "reason": "prefilter_low_ranked_icp"})
+            continue
         blocked, blocked_reason = _is_enterprise_or_non_smb(
             str(lead.get("company", "")),
             int(lead.get("company_size", 50) or 50),
@@ -672,54 +847,47 @@ def main() -> int:
             failed.append({"company": lead.get("company", ""), "reason": blocked_reason})
             continue
 
-        enrichment = dispatch_tool(
-            "enrich_lead_waterfall",
-            {
-                "name": str(lead.get("name", "")),
-                "company": str(lead.get("company", "")),
-                "domain": str(lead.get("company_domain", "")),
-            },
-        )
-        if enrichment.get("ok"):
-            data = enrichment.get("data", {}) if isinstance(enrichment.get("data"), dict) else {}
-            lead["name"] = str(data.get("name") or lead.get("name") or "").strip()
-            lead["title"] = str(data.get("title") or lead.get("title") or "").strip()
-            lead["email"] = str(data.get("email") or "").strip()
-            lead["phone"] = str(data.get("phone") or "").strip()
-            lead["linkedin_url"] = str(data.get("linkedin_url") or "").strip()
+        # Contact-first sequence: resolve identity/channel before expensive deep signal extraction.
+        _resolve_contact_from_public_sources(lead, [])
+        if not _has_real_person_identity(lead):
+            failed.append({"company": lead.get("company", ""), "reason": "missing_real_person"})
+            continue
+        if not _has_contact_channel(lead):
+            enrichment = dispatch_tool(
+                "enrich_lead_waterfall",
+                {
+                    "name": str(lead.get("name", "")),
+                    "company": str(lead.get("company", "")),
+                    "domain": str(lead.get("company_domain", "")),
+                },
+            )
+            if enrichment.get("ok"):
+                data = enrichment.get("data", {}) if isinstance(enrichment.get("data"), dict) else {}
+                lead["name"] = str(data.get("name") or lead.get("name") or "").strip()
+                lead["title"] = str(data.get("title") or lead.get("title") or "").strip()
+                lead["email"] = str(data.get("email") or "").strip()
+                lead["phone"] = str(data.get("phone") or "").strip()
+                lead["linkedin_url"] = str(data.get("linkedin_url") or "").strip()
+        if not _has_contact_channel(lead):
+            failed.append({"company": lead.get("company", ""), "reason": "missing_contact_channel"})
+            continue
 
         signal_target = max(22, hot_gate.get("min_signal_count", 20))
-        signal_objects = _extract_company_signals_fast(str(lead.get("company", "")), signal_target)
-        source_reports = []
-        source_failures = []
+        signal_objects, source_reports, source_failures = _extract_signals(
+            company=str(lead.get("company", "")),
+            objective=args.objective,
+            target_count=signal_target,
+        )
         signal_objects = _supplement_with_distinct_sources(
             existing=signal_objects,
             pool=global_pool_signals,
+            company=str(lead.get("company", "")),
+            domain=str(lead.get("company_domain", "")),
             target_count=signal_target,
             min_sources=int(hot_gate.get("min_distinct_sources", 2)),
         )
-        if not signal_objects:
-            # Deterministic fallback: preserve discovery evidence as minimal provenance instead of zero signals.
-            base_url = str(lead.get("source_url", "") or "")
-            signal_objects = [
-                {
-                    "source": str(lead.get("source_type", "jobspy")),
-                    "type": "job_posting",
-                    "confidence": 0.7,
-                    "url": base_url,
-                    "title": f"{lead.get('company','')} hiring signal",
-                    "observed_at": _now_iso(),
-                },
-                {
-                    "source": "internal",
-                    "type": "discovery_record",
-                    "confidence": 0.6,
-                    "url": base_url,
-                    "title": "discovery baseline",
-                    "observed_at": _now_iso(),
-                },
-            ]
         lead["signal_objects"] = signal_objects
+        _resolve_contact_from_public_sources(lead, signal_objects)
         lead_signals = [f"{s.get('source')}:{s.get('type')}:{str(s.get('observed_at',''))[:10]}" for s in signal_objects]
         source_blob = " ".join([str(s.get("source", "")).lower() for s in signal_objects])
         if "news" in source_blob:
@@ -738,14 +906,6 @@ def main() -> int:
             lead_signals.append("firmographic_source")
         if "g2" in source_blob or "capterra" in source_blob:
             lead_signals.append("reviews_source")
-        canonical_tokens = {"jobspy_source", "news_source", "reddit_source", "github_source", "ddg_source", "x_source", "firmographic_source", "reviews_source"}
-        present = {t for t in canonical_tokens if t in lead_signals}
-        if len(present) < 2:
-            if "news_source" not in present:
-                lead_signals.append("news_source")
-                present.add("news_source")
-            if len(present) < 2 and "ddg_source" not in present:
-                lead_signals.append("ddg_source")
         lead["signals"] = lead_signals
         lead.update(_score_evidence(signal_objects))
         rescored = dispatch_tool(
@@ -783,6 +943,16 @@ def main() -> int:
                 agg["failures"] += 1
                 agg["last_error_class"] = str(rep.get("error_class", "SourceError"))
                 agg["last_error"] = str(rep.get("error", "unknown_error"))
+        for src_fail in source_failures:
+            src = str(src_fail.get("source", "unknown"))
+            agg = source_failures_by_source.setdefault(
+                src,
+                {"source": src, "calls": 0, "failures": 0, "last_error_class": "", "last_error": "", "max_duration_ms": 0},
+            )
+            agg["calls"] += 1
+            agg["failures"] += 1
+            agg["last_error_class"] = str(src_fail.get("error_class", "SourceError"))
+            agg["last_error"] = str(src_fail.get("error", "unknown_error"))
         if not signal_objects:
             failed.append(
                 {
@@ -797,6 +967,9 @@ def main() -> int:
             continue
         if not _has_contact_channel(lead):
             failed.append({"company": lead.get("company", ""), "reason": "missing_contact_channel"})
+            continue
+        if not _is_verified_email(str(lead.get("email", ""))):
+            failed.append({"company": lead.get("company", ""), "reason": "missing_verified_email"})
             continue
         if float(lead.get("budget_score", 0)) <= 0 or float(lead.get("urgency_score", 0)) <= 0:
             failed.append({"company": lead.get("company", ""), "reason": "missing_budget_or_urgency_signal"})

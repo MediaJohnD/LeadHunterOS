@@ -1963,19 +1963,24 @@ def _enrich_lead_waterfall(
             aggregate["mx_verification"] = mx.get("result", {})
             confidence += 15
 
-    # Step 4: optional fallbacks (kept no-op when keys absent)
-    fallback = _enrich_apollo(name=name, company=company, domain=resolved_domain)
-    provenance.append({"step": "enrich_apollo", "ok": bool(fallback.get("ok")), "confidence_delta": 5})
-    if fallback.get("ok"):
-        aggregate["apollo_fallback"] = fallback
-        confidence += 5
+    # Step 4: optional paid fallback (disabled by default in production)
+    if bool(getattr(config, "ENABLE_PAID_FALLBACKS", False)):
+        fallback = _enrich_apollo(name=name, company=company, domain=resolved_domain)
+        provenance.append({"step": "enrich_apollo", "ok": bool(fallback.get("ok")), "confidence_delta": 5})
+        if fallback.get("ok"):
+            aggregate["apollo_fallback"] = fallback
+            confidence += 5
 
     # Provider-voting cross validation
     voting = _provider_vote(aggregate, provenance)
     confidence += int(voting.get("confidence_boost", 0))
     aggregate["provider_voting"] = voting
 
-    mx_ok = bool((aggregate.get("mx_verification") or {}).get("ok", True))
+    mx_raw = aggregate.get("mx_verification")
+    if isinstance(mx_raw, dict):
+        mx_ok = bool(mx_raw.get("ok", True))
+    else:
+        mx_ok = bool(mx_raw) if mx_raw is not None else True
     contact_tier = _classify_contact_resolution(
         name=name,
         domain=resolved_domain or str(aggregate.get("company_domain", "")),
