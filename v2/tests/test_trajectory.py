@@ -5,7 +5,8 @@ import unittest
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "v2")
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 from agent.trajectory import TrajectoryRecorder, diff_trajectories, load_trajectory, replay_summary
 
 
@@ -40,7 +41,7 @@ class TrajectoryTests(unittest.TestCase):
             self.assertTrue(d["final_response_changed"])
 
     def test_golden_trajectory_regression(self) -> None:
-        fixture = Path("v2/tests/fixtures/golden_trajectory_minimal.json")
+        fixture = ROOT / "tests" / "fixtures" / "golden_trajectory_minimal.json"
         run = load_trajectory(str(fixture))
         summary = replay_summary(str(fixture))
 

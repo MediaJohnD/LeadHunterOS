@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import sys
 import unittest
+from pathlib import Path
 
-sys.path.insert(0, "v2")
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from evals.harness import run_all
 

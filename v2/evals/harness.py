@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, "v2")
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 from agent.hermes_agent import HermesAgent
 
-
-FIXTURE_DIR = Path("v2/evals/fixtures")
+FIXTURE_DIR = ROOT / "evals" / "fixtures"
 
 
 @dataclass
